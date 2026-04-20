@@ -411,8 +411,8 @@ fn main() -> ! {
                                     respond_connect_success(msg, cid, disc)
                                 }
                                 Ok(ConnectSuccess::Wait) => {
-                                    panic!(
-                                        "message connection attempt resulted in `Wait` even though it ought to exist"
+                                    log::error!(
+                                        "message connection attempt resulted in `Wait` even though it ought to exist; dropping"
                                     );
                                 }
                             }

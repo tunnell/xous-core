@@ -58,15 +58,35 @@ impl<'buf> Buffer<'buf> {
         core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst);
     }
 
-    /// use to serialize a buffer between process-local threads. mainly for spawning new threads with more
-    /// complex argument structures.
+    /// Use to serialize a buffer between process-local threads. Mainly for spawning new
+    /// threads with more complex argument structures.
+    ///
+    /// # Safety
+    /// The returned `(address, len, offset)` triple exposes raw pointer + length metadata
+    /// from the underlying `MemoryRange`. The caller must treat it as an opaque handle and
+    /// must ensure that the `Buffer` this was obtained from outlives any use of the triple
+    /// (e.g. via `from_raw_parts`). Passing the triple to another process is undefined
+    /// behavior because the virtual address is only valid in the originating address space.
     #[allow(dead_code)]
     pub unsafe fn to_raw_parts(&self) -> (usize, usize, usize) {
         (self.pages.as_ptr() as usize, self.pages.len(), self.used)
     }
 
-    /// use to serialize a buffer between process-local threads. mainly for spawning new threads with more
-    /// complex argument structures.
+    /// Reconstruct a `Buffer` from a `(address, len, offset)` triple previously produced
+    /// by `to_raw_parts`. Used to serialize a buffer between process-local threads; mainly
+    /// for spawning new threads with more complex argument structures.
+    ///
+    /// # Safety
+    /// - `address` and `len` must describe a memory range that was previously obtained from
+    ///   `map_memory` / `Buffer::new` in the **same process** and which has not been freed
+    ///   or remapped since.
+    /// - `len` must be a non-zero multiple of the page size (`PAGE_SIZE`), and `address`
+    ///   must be page-aligned.
+    /// - `offset` must be `<= len`.
+    /// - The resulting `Buffer` aliases the original memory; the caller must ensure no other
+    ///   mutable reference to that memory exists for the lifetime of the returned `Buffer`.
+    /// - The returned `Buffer` has `should_drop = false` — the caller retains ownership of
+    ///   the backing pages and is responsible for `unmap_memory`.
     #[allow(dead_code)]
     pub unsafe fn from_raw_parts(address: usize, len: usize, offset: usize) -> Self {
         let mem = MemoryRange::new(address, len).expect("invalid memory range args");
@@ -93,9 +113,18 @@ impl<'buf> Buffer<'buf> {
         }
     }
 
-    /// Inverse of into_inner(). Used to re-cycle pages back into a Buffer so we don't have
-    /// to re-allocate data. Only safe if the `pages` matches the criteria for mapped memory
-    /// pages in Xous: page-aligned, with lengths that are a multiple of a whole page size.
+    /// Inverse of `into_inner`. Used to re-cycle pages back into a `Buffer` so we don't
+    /// have to re-allocate data.
+    ///
+    /// # Safety
+    /// - `pages` must be a valid `MemoryRange` returned from a previous `into_inner` call
+    ///   (or equivalently, from `map_memory`): page-aligned, length a non-zero multiple of
+    ///   the page size, currently mapped in this process.
+    /// - `used <= pages.len()`.
+    /// - The caller must ensure no other live reference aliases this memory; the returned
+    ///   `Buffer` constructs a `&mut [u8]` over it.
+    /// - The returned `Buffer` has `should_drop = false` — ownership of `pages` is *not*
+    ///   transferred, and the caller remains responsible for `unmap_memory`.
     pub unsafe fn from_inner(pages: MemoryRange, used: usize) -> Self {
         Buffer {
             pages,
@@ -106,6 +135,19 @@ impl<'buf> Buffer<'buf> {
         }
     }
 
+    /// Wrap a `MemoryMessage` received on a server-side `Borrow` (read-only lend).
+    ///
+    /// # Safety
+    /// - `mem.buf` must be a live, page-aligned memory range that the kernel has mapped
+    ///   into this process's address space as part of delivering the message.
+    /// - The returned `Buffer` constructs a `&mut [u8]` over `mem.buf`. The contents of
+    ///   the buffer are **not validated** against any schema — the bytes come from an
+    ///   untrusted sender. Downstream deserializers (e.g. `to_original` / `as_flat`)
+    ///   are responsible for rejecting malformed payloads.
+    /// - The lifetime `'buf` must not outlive the message envelope, otherwise the buffer
+    ///   will point into memory the kernel has already unmapped.
+    /// - This wrapper does *not* take responsibility for returning the lent memory; that
+    ///   happens via normal `Drop` of the `MessageEnvelope` in the server's dispatch loop.
     #[allow(dead_code)]
     pub unsafe fn from_memory_message(mem: &'buf MemoryMessage) -> Self {
         Buffer {
@@ -117,6 +159,17 @@ impl<'buf> Buffer<'buf> {
         }
     }
 
+    /// Wrap a `MemoryMessage` received on a server-side `MutableBorrow` (lend_mut).
+    ///
+    /// # Safety
+    /// Same safety contract as [`from_memory_message`], with one addition:
+    /// - Because the server may modify the buffer in-place, the caller must ensure that
+    ///   the referenced memory is actually writable (the kernel maps `MutableBorrow`
+    ///   pages with write permissions; constructing this from a `Borrow` message would
+    ///   cause a page fault on any write through the returned `&mut [u8]`).
+    ///
+    /// The wrapper stores the `&mut MemoryMessage` so the server-side `offset` / `valid`
+    /// fields can be updated via `replace` before the borrow is returned to the client.
     #[allow(dead_code)]
     pub unsafe fn from_memory_message_mut(mem: &'buf mut MemoryMessage) -> Self {
         Buffer {
@@ -363,3 +416,4 @@ impl<'a> Drop for Buffer<'a> {
         }
     }
 }
+        

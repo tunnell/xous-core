@@ -1194,7 +1194,6 @@ fn main() -> ! {
             }
             None => {
                 error!("unknown opcode");
-                break;
             }
         }
 

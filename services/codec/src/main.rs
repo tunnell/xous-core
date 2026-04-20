@@ -250,7 +250,6 @@ fn wrapped_main() -> ! {
             }),
             None => {
                 log::error!("couldn't convert opcode");
-                break;
             }
         }
     }

@@ -679,7 +679,6 @@ fn main() -> ! {
             }),
             None => {
                 log::error!("couldn't convert opcode");
-                break;
             }
         }
     }

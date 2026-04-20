@@ -498,12 +498,7 @@ fn main() -> ! {
                 buffer.replace(response).expect("Lookup can't serialize return value");
             }
             Some(api::Opcode::AuthenticatedLookup) => {
-                let mem = msg.body.memory_message_mut().unwrap();
-                let buffer = unsafe { Buffer::from_memory_message_mut(mem) };
-                let auth_lookup: AuthenticatedLookup = buffer.to_original().unwrap();
-                info!("AuthenticatedLookup request {:?}", auth_lookup);
-                error!("AuthenticatedLookup not yet implemented");
-                unimplemented!("AuthenticatedLookup not yet implemented");
+                error!("AuthenticatedLookup not yet implemented; ignoring");
             }
             Some(api::Opcode::TrustedInitDone) => {
                 if name_table.trusted_init_done() {
@@ -526,7 +521,6 @@ fn main() -> ! {
             }
             None => {
                 error!("couldn't decode message: {:?}", msg);
-                break;
             }
         }
     }

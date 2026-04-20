@@ -1210,3 +1210,81 @@ fn renormalizer() {
         assert!(max_element < TEST_LEN as u32);
     }
 }
+
+/// Regression: a `FromPrimitive`-matched dispatch loop with a `None =>`
+/// arm must `continue`, not `break`. A `break` terminates the server
+/// process, letting any client DoS it with an unassigned opcode id.
+///
+/// The server processes three messages: an unknown opcode, a known
+/// "ping", and a shutdown. Each receipt is signalled over a channel.
+/// If the server breaks on the unknown opcode, the ping is never
+/// acknowledged and the timeout fires.
+#[test]
+fn dispatch_survives_unknown_opcode() {
+    const PING: usize = 1;
+    const SHUTDOWN: usize = 2;
+
+    let main_thread = start_kernel(SERVER_SPEC);
+
+    let (server_addr_send, server_addr_recv) = unbounded();
+    let (processed_send, processed_recv) = unbounded::<usize>();
+
+    let xous_server = xous_kernel::create_process_as_thread(xous_kernel::ProcessArgsAsThread::new(
+        "dispatch_server",
+        move || {
+            let sid = xous_kernel::create_server().expect("server sid");
+            server_addr_send.send(sid).unwrap();
+
+            loop {
+                let msg = xous_kernel::receive_message(sid).expect("recv");
+                let op_id: Option<usize> = match &msg.body {
+                    xous_kernel::Message::Scalar(s) => Some(s.id),
+                    xous_kernel::Message::BlockingScalar(s) => Some(s.id),
+                    _ => None,
+                };
+                processed_send.send(op_id.unwrap_or(0)).unwrap();
+                match op_id {
+                    Some(SHUTDOWN) => break,
+                    Some(PING) => {}
+                    _ => continue, // fix under test; was `break`
+                }
+            }
+        },
+    ))
+    .expect("spawn server");
+
+    let xous_client = xous_kernel::create_process_as_thread(xous_kernel::ProcessArgsAsThread::new(
+        "dispatch_client",
+        move || {
+            let sid = server_addr_recv.recv().unwrap();
+            let conn = xous_kernel::try_connect(sid).expect("connect");
+            for id in [0xdead_beef, PING, SHUTDOWN] {
+                xous_kernel::try_send_message(
+                    conn,
+                    xous_kernel::Message::Scalar(xous_kernel::ScalarMessage {
+                        id,
+                        arg1: 0,
+                        arg2: 0,
+                        arg3: 0,
+                        arg4: 0,
+                    }),
+                )
+                .expect("send");
+            }
+        },
+    ))
+    .expect("spawn client");
+
+    let timeout = std::time::Duration::from_secs(5);
+    let first = processed_recv.recv_timeout(timeout).expect("first msg");
+    let second = processed_recv.recv_timeout(timeout).expect("second msg — did the server break?");
+    let third = processed_recv.recv_timeout(timeout).expect("third msg");
+    assert_eq!(first, 0xdead_beef);
+    assert_eq!(second, PING);
+    assert_eq!(third, SHUTDOWN);
+
+    crate::wait_process_as_thread(xous_server).expect("join server");
+    crate::wait_process_as_thread(xous_client).expect("join client");
+    shutdown_kernel();
+    main_thread.join().expect("join kernel");
+}

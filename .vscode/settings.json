@@ -1,0 +1,44 @@
+{
+    "rust-analyzer.cargo.target": "riscv32imac-unknown-xous-elf",
+    "rust-analyzer.check.overrideCommand": [
+        "cargo",
+        "check",
+        "--target",
+        "riscv32imac-unknown-xous-elf",
+        "--target-dir",
+        "target/analyzer",
+        "--features",
+        "bao1x",
+        "--features",
+        "utralib/bao1x",
+        "--features",
+        "board-baosec",
+        "--message-format",
+        "json"
+    ],
+    "rust-analyzer.server.extraEnv": {
+        "XOUS_SVD_FILE": "../precursors/soc.svd"
+    },
+    "rust-analyzer.cargo.features": [
+        "bao1x",
+        "board-baosec",
+        "swap",
+    ],
+    "rust-analyzer.files.excludeDirs": [
+        "./loader/**"
+    ],
+    "files.exclude": {
+        "**/.git": true,
+        "**/.svn": true,
+        "**/.hg": true,
+        "**/CVS": true,
+        "**/.DS_Store": true,
+        "**/Thumbs.db": true
+    },
+    "rust-analyzer.rustfmt.extraArgs": [
+        "+nightly"
+    ],
+    "files.trimTrailingWhitespace": true,
+    "editor.formatOnSave": true,
+    "cSpell.language": "en,fr"
+}

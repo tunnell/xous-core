@@ -131,8 +131,10 @@ impl Chat {
             }
         });
 
+        let server_ready = Arc::new(AtomicBool::new(false));
         log::info!("Starting chat UI server",);
         thread::spawn({
+            let server_ready = server_ready.clone();
             move || {
                 server(
                     chat_sid,
@@ -144,9 +146,16 @@ impl Chat {
                     opcode_rawkeys,
                     run_busy_animation,
                     busy_bumper_cid,
+                    server_ready,
                 );
             }
         });
+
+        // Block until Ui::new() has completed so the caller can safely make
+        // concurrent IPC calls without colliding with register_ux in flight.
+        while !server_ready.load(Ordering::Acquire) {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
 
         Chat { cid: chat_cid }
     }
@@ -404,12 +413,14 @@ pub fn server(
     opcode_rawkeys: Option<usize>,
     run_busy_animation: Arc<AtomicBool>,
     busy_bumper_cid: CID,
+    server_ready: Arc<AtomicBool>,
 ) -> ! {
     //log_server::init_wait().unwrap();
     log::set_max_level(log::LevelFilter::Info);
     log::info!("my PID is {}", xous::process::id());
 
     let mut ui = ui::Ui::new(sid, app_name, app_menu, app_cid, opcode_event);
+    server_ready.store(true, Ordering::Release);
     let mut dialogue_key = None;
     let mut allow_redraw = false;
     loop {
@@ -660,4 +671,27 @@ pub fn cf_set_busy_state(chat_cid: xous::CID, run: bool) {
     )
     .map(|_| ())
     .expect("internal error");
+}
+
+/// Trigger a UI redraw from a context-free call site. Mirrors Chat::redraw.
+pub fn cf_redraw(chat_cid: xous::CID) {
+    let _ = xous::send_message(
+        chat_cid,
+        xous::Message::new_scalar(ChatOp::GamRedraw as usize, 0, 0, 0, 0),
+    );
+}
+
+/// Add a post to the current dialogue from a context-free (no Chat handle)
+/// call site such as a worker thread. Mirrors Chat::post_add internally.
+pub fn cf_post_add(chat_cid: xous::CID, author: &str, timestamp: u64, text: &str) {
+    let post = api::Post {
+        dialogue_id: String::new(),
+        author: author.to_string(),
+        timestamp,
+        text: text.to_string(),
+        attach_url: None,
+    };
+    if let Ok(buf) = Buffer::into_buf(post) {
+        let _ = buf.send(chat_cid, ChatOp::PostAdd as u32);
+    }
 }

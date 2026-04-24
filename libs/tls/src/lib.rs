@@ -356,6 +356,36 @@ impl Tls {
     /// # Returns
     ///
     /// the number of trusted Certificates offered by the host
+    /// Connect and silently auto-trust the first CA cert in the chain if none are trusted yet.
+    /// Trust-on-first-use (TOFU) with no user prompt. Safe for hardcoded trusted hosts.
+    pub fn trust_tofu(&self, host: &str) -> bool {
+        if self.accessible(host, false) {
+            return true;
+        }
+        match self.probe(host) {
+            Ok(certs) => {
+                for cert in &certs {
+                    if let Ok((_, x509)) = X509Certificate::from_der(cert) {
+                        if x509.is_ca() {
+                            if let Ok(ta) = OwnedTrustAnchor::from_x509(&x509) {
+                                if self.save_ta(&ta).is_ok() {
+                                    log::info!("TOFU: auto-trusted CA for {host}");
+                                    return true;
+                                }
+                            }
+                        }
+                    }
+                }
+                log::warn!("TOFU: no CA cert found in chain for {host}");
+                false
+            }
+            Err(e) => {
+                log::warn!("TOFU probe failed for {host}: {e}");
+                false
+            }
+        }
+    }
+
     pub fn inspect(&self, host: &str) -> Result<usize, Error> {
         match self.probe(host) {
             Ok(certs) => {

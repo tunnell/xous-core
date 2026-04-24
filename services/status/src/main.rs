@@ -1302,11 +1302,11 @@ fn wrapped_main() -> ! {
             }
             Some(StatusOpcode::SubmenuPddb) => {
                 ticktimer.sleep_ms(100).ok(); // yield for a moment to allow the previous menu to close
-                gam.raise_menu(gam::PDDB_MENU_NAME).expect("couldn't raise PDDB submenu");
+                gam.raise_menu(gam::PDDB_MENU_NAME).ok();
             }
             Some(StatusOpcode::SubmenuApp) => {
                 ticktimer.sleep_ms(100).ok(); // yield for a moment to allow the previous menu to close
-                gam.raise_menu(gam::APP_MENU_NAME).expect("couldn't raise App submenu");
+                gam.raise_menu(gam::APP_MENU_NAME).ok();
             }
             Some(StatusOpcode::SwitchToShellchat) => {
                 ticktimer.sleep_ms(100).ok();

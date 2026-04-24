@@ -369,7 +369,6 @@ impl Gam {
     pub fn register_ux(&self, registration: UxRegistration) -> Result<Option<[u32; 4]>, xous::Error> {
         let mut buf = Buffer::into_buf(registration).or(Err(xous::Error::InternalError))?;
         buf.lend_mut(self.conn, Opcode::RegisterUx.to_u32().unwrap()).or(Err(xous::Error::InternalError))?;
-
         match buf.to_original().unwrap() {
             api::Return::UxToken(token) => Ok(token),
             _ => Err(xous::Error::InternalError),

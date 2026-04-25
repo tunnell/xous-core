@@ -1627,12 +1627,12 @@ dependencies = [
 
 [[package]]
 name = "curve25519-dalek"
-version = "4.1.2"
-source = "git+https://github.com/betrusted-io/curve25519-dalek.git?branch=main#16e087ab969a5d3f4099fddca97ac6dbba82bd66"
+version = "4.1.3"
+source = "git+https://github.com/tunnell/curve25519-dalek.git?rev=98a8578bec7ad24f55eb78ab2d327c919791926e#98a8578bec7ad24f55eb78ab2d327c919791926e"
 dependencies = [
  "cfg-if",
  "cpufeatures",
- "curve25519-dalek-derive 0.1.1 (git+https://github.com/betrusted-io/curve25519-dalek.git?branch=main)",
+ "curve25519-dalek-derive 0.1.1 (git+https://github.com/tunnell/curve25519-dalek.git?rev=98a8578bec7ad24f55eb78ab2d327c919791926e)",
  "digest 0.10.7",
  "engine25519-as",
  "fiat-crypto 0.2.7",
@@ -1681,7 +1681,7 @@ dependencies = [
 [[package]]
 name = "curve25519-dalek-derive"
 version = "0.1.1"
-source = "git+https://github.com/betrusted-io/curve25519-dalek.git?branch=main#16e087ab969a5d3f4099fddca97ac6dbba82bd66"
+source = "git+https://github.com/tunnell/curve25519-dalek.git?rev=98a8578bec7ad24f55eb78ab2d327c919791926e#98a8578bec7ad24f55eb78ab2d327c919791926e"
 dependencies = [
  "proc-macro2",
  "quote",

@@ -257,7 +257,7 @@ impl FrameBuffer for XousDisplay {
 
 impl MinifbThread {
     pub fn run_while(self, mut predicate: impl FnMut() -> bool) {
-        let mut window = Window::new(
+        let window_result = Window::new(
             "Precursor",
             WIDTH as usize,
             HEIGHT as usize,
@@ -266,11 +266,20 @@ impl MinifbThread {
                 resize: true,
                 ..WindowOptions::default()
             },
-        )
-        .unwrap_or_else(|e| {
-            log::error!("{e:?}");
-            std::process::abort();
-        });
+        );
+        let mut window = match window_result {
+            Ok(w) => w,
+            Err(e) => {
+                // No display available (e.g. no X server). Run headlessly so that
+                // the server thread can still process IPC — useful for automated
+                // scans and CI where a GUI is not required.
+                log::warn!("GFX|hosted: no display — running headless ({e:?})");
+                while predicate() {
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+                return;
+            }
+        };
 
         // Limit the maximum update rate
         window.set_target_fps(MAX_FPS);

@@ -17,7 +17,7 @@ namespace Antmicro.Renode.Peripherals.Timers.Betrusted
     [AllowedTranslations(AllowedTranslation.ByteToDoubleWord)]
     public class LiteX_Timer_32 : BasicDoubleWordPeripheral, IKnownSize
     {
-        public LiteX_Timer_32(Machine machine, long frequency) : base(machine)
+        public LiteX_Timer_32(Machine machine, ulong frequency) : base(machine)
         {
             IRQ = new GPIO();
             innerTimer = new LimitTimer(machine.ClockSource, frequency, this, "LiteXTimer32", eventEnabled: true, autoUpdate: true);

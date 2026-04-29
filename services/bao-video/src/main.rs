@@ -70,6 +70,8 @@ use xous_ipc::Buffer;
 pub const IMAGE_WIDTH: usize = 256;
 pub const IMAGE_HEIGHT: usize = 240;
 
+const MAX_RETRIES: u32 = 5;
+
 #[derive(PartialEq, Eq, Clone, Copy)]
 enum DisplayOrientation {
     Normal,
@@ -224,10 +226,9 @@ pub fn wrapped_main(main_thread_token: MainThreadToken) -> ! {
     let hal = Hal::new();
 
     let mut display = Oled128x128::new(main_thread_token, bao1x_api::PERCLK, &iox, &udma_global);
-    // these unwrap because if we have a time-out at this stage, it's likely a hardware problem
-    display.init().unwrap();
+    retry_display_op(&udma_global, &mut display, |d| d.init()).unwrap();
     display.clear();
-    display.draw().unwrap();
+    retry_display_op(&udma_global, &mut display, |d| d.draw()).unwrap();
 
     // ---- panic handler - set up early so we can see panics quickly
     // install the graphical panic handler. It won't catch really early panics, or panics in this crate,
@@ -932,6 +933,15 @@ pub fn wrapped_main(main_thread_token: MainThreadToken) -> ! {
                     display.render_bitmap(bitmap);
                 }
                 #[cfg(feature = "board-baosec")]
+                GfxOpcode::BaosecBitmapDiffuse => {
+                    use rand::Rng;
+                    let buffer = unsafe { Buffer::from_memory_message(msg.body.memory_message().unwrap()) };
+                    let bitmap = buffer.to_original::<BaosecBitmap, _>().unwrap();
+                    display
+                        .render_bitmap_diffuse(&bitmap, 10, rand::thread_rng().gen::<u64>())
+                        .unwrap_or_else(|_| display_timeout_handler(&udma_global, &mut display));
+                }
+                #[cfg(feature = "board-baosec")]
                 GfxOpcode::Brightness => {
                     if let Some(scalar) = msg.body.scalar_message_mut() {
                         let brightness = scalar.arg1.min(255) as u8;
@@ -959,7 +969,9 @@ pub fn wrapped_main(main_thread_token: MainThreadToken) -> ! {
                         }
                     }
                 }
-                GfxOpcode::Quit => break,
+                GfxOpcode::Quit => {
+                    log::info!("refusing to quit, this operation is not supported on this platform!");
+                }
                 _ => {
                     // This is perfectly normal because not all opcodes are handled by all platforms.
                     log::debug!("Invalid or unhandled opcode: {:?}", opcode);
@@ -970,11 +982,6 @@ pub fn wrapped_main(main_thread_token: MainThreadToken) -> ! {
             tt.sleep_ms(10_000).unwrap();
         }
     }
-    log::trace!("main loop exit, destroying servers");
-    xns.unregister_server(sid).unwrap();
-    xous::destroy_server(sid).unwrap();
-    log::trace!("quitting");
-    xous::terminate_process(0)
 }
 
 #[allow(unused_variables)]
@@ -984,5 +991,37 @@ fn display_timeout_handler(udma_global: &UdmaGlobal, display: &mut Oled128x128) 
     {
         udma_global.reset(PeriphId::from(bao1x_hal::board::get_display_pins().0));
         display.reinit_spi();
+    }
+}
+
+/// This is actually "infalliable" in the sense that if we can't initialize the
+/// display, we diverge and reboot.
+fn retry_display_op<F, R, E>(udma: &UdmaGlobal, display: &mut Oled128x128, mut op: F) -> Result<R, E>
+where
+    F: FnMut(&mut Oled128x128) -> Result<R, E>,
+    E: core::fmt::Debug,
+{
+    let mut attempts = 0;
+    loop {
+        match op(display) {
+            Ok(val) => return Ok(val),
+            Err(e) => {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+                attempts += 1;
+                if attempts >= MAX_RETRIES {
+                    log::warn!("Display seems stuck, rebooting whole chip.");
+                    let xns = xous_names::XousNames::new().unwrap();
+                    let susres = susres::Susres::new_without_hook(&xns).unwrap();
+                    susres.reboot(true).ok();
+                }
+                log::warn!(
+                    "Display op failed (attempt {}/{}), resetting SPI block... {:?}",
+                    attempts,
+                    MAX_RETRIES,
+                    e
+                );
+                display_timeout_handler(udma, display);
+            }
+        }
     }
 }

@@ -104,11 +104,18 @@ def main():
                     # passing = False # not a fail, because it's the test condition that's wrong, not the code
                     passing = 'OOM'
                     proc.kill()
-                if "lack of free space" in realtime_output:
-                    err_log.append(realtime_output)
-                    logging.debug("ran out of space")
-                    passing = 'OOM'
-                    proc.kill()
+                # NOTE: "lack of free space" is *not* in the OOM list. Looks
+                # like an OOM string, but in current PDDB it's the WARN line
+                # emitted by `ensure_fast_space_alloc` (hw.rs:1839) at the
+                # entry to the FastSpace-recovery sweep. After this PR the
+                # recovery actually completes, so the warning fires every
+                # time the CI test fills the 4MB disk's free pool — i.e.
+                # every time the test exercises the recovery path it's
+                # supposed to exercise. Treating it as OOM here mis-labels
+                # a passing run. The genuine "out of disk" sentinel is
+                # `"no free pages"` (matched below; emitted only by
+                # `Disk is out of space, no free pages available!` at
+                # hw.rs:1370 when the recovery itself can't find any).
                 if "no free pages" in realtime_output:
                     err_log.append(realtime_output)
                     logging.debug("ran out of space")

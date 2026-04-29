@@ -2936,10 +2936,11 @@ impl PddbOs {
     }
 
     #[cfg(not(all(feature = "pddbtest", feature = "autobasis")))]
-    #[cfg(feature = "gen2")]
+    #[cfg(any(feature = "gen2", feature = "ci"))]
     /// This is a bit unsafe in that it simply returns the list of all the known keys and doesn't
     /// prompt the user to enter any hidden bases. However, for gen2-targets, we're simplifying
-    /// the basis logic and assuming that the UI is all handled outside of the PDDB.
+    /// the basis logic and assuming that the UI is all handled outside of the PDDB. Also used
+    /// under `feature = "ci"`, where there is no user to prompt.
     pub(crate) fn pddb_get_all_keys(&self, cache: &Vec<BasisCacheEntry>) -> Option<Vec<(BasisKeys, String)>> {
         // populate the "known" entries
         let mut ret = Vec::<(BasisKeys, String)>::new();
@@ -2957,7 +2958,7 @@ impl PddbOs {
     /// a Vec of keys & names, not a BasisCacheEntry -- so it means that the Basis still are "closed"
     /// at the conclusion of the sweep, but their page use can be accounted for.
     #[cfg(not(all(feature = "pddbtest", feature = "autobasis")))]
-    #[cfg(feature = "gen1")]
+    #[cfg(all(feature = "gen1", not(feature = "ci")))]
     pub(crate) fn pddb_get_all_keys(&self, cache: &Vec<BasisCacheEntry>) -> Option<Vec<(BasisKeys, String)>> {
         #[cfg(feature = "ux-swap-delay")]
         const SWAP_DELAY_MS: usize = 300;

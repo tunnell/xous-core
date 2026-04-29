@@ -58,25 +58,12 @@ def main():
         ci_done_seen = False
         while True:
             realtime_output = proc.stdout.readline()
-            # The kill threshold below was hardcoded `> 20`, regardless of
-            # the `timeout` variable (240s on the first iteration to allow
-            # for compilation, 20s thereafter). The first iteration was
-            # therefore silently killed at 20s — well before cargo could
-            # finish compiling — and the inner FAIL-label check (`> timeout`)
-            # didn't match, so the run got no label and fell through to
-            # "FAIL CI COULD NOT RUN" via the empty-image analyzer step.
-            # Use `timeout` consistently so the kill threshold and the
-            # label threshold agree.
             if (realtime_output == '' and proc.poll() is not None) or (time.time() - start_time > timeout):
                 proc.kill()
                 if time.time() - start_time > timeout:
                     logging.debug("timeout on generation (CI done seen={})".format(ci_done_seen))
-                    # Distinguish "ran the full budget without seeing
-                    # 'CI done'" from a clean exit. The Rust side emits
-                    # `log::info!("CI done")` (services/pddb/src/tests.rs)
-                    # at completion; if we never see it, the test stalled
-                    # or crashed silently. Helpful for diagnosing #832-
-                    # adjacent failures where the test never finishes.
+                    # The Rust side emits "CI done" at the end of the test sequence;
+                    # absence of that sentinel indicates the test stalled or crashed.
                     passing = 'FAIL TIMEOUT' if ci_done_seen else 'FAIL TIMEOUT (no CI done)'
                 break
             if realtime_output:
@@ -104,18 +91,9 @@ def main():
                     # passing = False # not a fail, because it's the test condition that's wrong, not the code
                     passing = 'OOM'
                     proc.kill()
-                # NOTE: "lack of free space" is *not* in the OOM list. Looks
-                # like an OOM string, but in current PDDB it's the WARN line
-                # emitted by `ensure_fast_space_alloc` (hw.rs:1839) at the
-                # entry to the FastSpace-recovery sweep. After this PR the
-                # recovery actually completes, so the warning fires every
-                # time the CI test fills the 4MB disk's free pool — i.e.
-                # every time the test exercises the recovery path it's
-                # supposed to exercise. Treating it as OOM here mis-labels
-                # a passing run. The genuine "out of disk" sentinel is
-                # `"no free pages"` (matched below; emitted only by
-                # `Disk is out of space, no free pages available!` at
-                # hw.rs:1370 when the recovery itself can't find any).
+                # "lack of free space" is the diagnostic emitted at entry to the FastSpace
+                # recovery sweep, not a fatal OOM — handled by the recovery path. The genuine
+                # out-of-disk sentinel is "no free pages" (from hw.rs:1370).
                 if "no free pages" in realtime_output:
                     err_log.append(realtime_output)
                     logging.debug("ran out of space")

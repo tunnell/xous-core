@@ -55,19 +55,36 @@ def main():
             errors='replace'
         )
         start_time = time.time()
+        ci_done_seen = False
         while True:
             realtime_output = proc.stdout.readline()
-            if (realtime_output == '' and proc.poll() is not None) or (time.time() - start_time > 20):
+            # The kill threshold below was hardcoded `> 20`, regardless of
+            # the `timeout` variable (240s on the first iteration to allow
+            # for compilation, 20s thereafter). The first iteration was
+            # therefore silently killed at 20s — well before cargo could
+            # finish compiling — and the inner FAIL-label check (`> timeout`)
+            # didn't match, so the run got no label and fell through to
+            # "FAIL CI COULD NOT RUN" via the empty-image analyzer step.
+            # Use `timeout` consistently so the kill threshold and the
+            # label threshold agree.
+            if (realtime_output == '' and proc.poll() is not None) or (time.time() - start_time > timeout):
                 proc.kill()
                 if time.time() - start_time > timeout:
-                    logging.debug("timeout on generation")
-                    passing = 'FAIL TIMEOUT'
+                    logging.debug("timeout on generation (CI done seen={})".format(ci_done_seen))
+                    # Distinguish "ran the full budget without seeing
+                    # 'CI done'" from a clean exit. The Rust side emits
+                    # `log::info!("CI done")` (services/pddb/src/tests.rs)
+                    # at completion; if we never see it, the test stalled
+                    # or crashed silently. Helpful for diagnosing #832-
+                    # adjacent failures where the test never finishes.
+                    passing = 'FAIL TIMEOUT' if ci_done_seen else 'FAIL TIMEOUT (no CI done)'
                 break
             if realtime_output:
                 if 'Seed' in realtime_output:
                     logging.info(realtime_output.strip()) # flush=True for print version
                 if 'CI done' in realtime_output:
                     logging.info(realtime_output.strip())
+                    ci_done_seen = True
                     proc.kill()
                 if 'Ran out of memory' in realtime_output:
                     err_log.append(realtime_output)

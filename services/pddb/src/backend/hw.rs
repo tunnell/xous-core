@@ -2936,10 +2936,19 @@ impl PddbOs {
     }
 
     #[cfg(not(all(feature = "pddbtest", feature = "autobasis")))]
-    #[cfg(feature = "gen2")]
+    #[cfg(any(feature = "gen2", feature = "ci"))]
     /// This is a bit unsafe in that it simply returns the list of all the known keys and doesn't
     /// prompt the user to enter any hidden bases. However, for gen2-targets, we're simplifying
     /// the basis logic and assuming that the UI is all handled outside of the PDDB.
+    ///
+    /// The same body is also used under `feature = "ci"` (issue #832): the FastSpace-recovery
+    /// path calls `pddb_get_all_keys` whenever an allocation forces a deep free-space sweep, and
+    /// the interactive gen1 version (below) opens a `modals` UI prompt asking the user for
+    /// passwords for any closed bases. In a `cargo xtask pddb-ci` run there is no user, so that
+    /// modal IPC never returns and the whole emulation deadlocks (every thread parks in
+    /// `futex_wait`). The CI tests in `services/pddb/src/tests.rs` keep all bases mounted, so
+    /// the cache already contains every basis the recovery path needs to scan; returning the
+    /// cache contents is sufficient and lets the FSCB regenerate cleanly.
     pub(crate) fn pddb_get_all_keys(&self, cache: &Vec<BasisCacheEntry>) -> Option<Vec<(BasisKeys, String)>> {
         // populate the "known" entries
         let mut ret = Vec::<(BasisKeys, String)>::new();
@@ -2957,7 +2966,7 @@ impl PddbOs {
     /// a Vec of keys & names, not a BasisCacheEntry -- so it means that the Basis still are "closed"
     /// at the conclusion of the sweep, but their page use can be accounted for.
     #[cfg(not(all(feature = "pddbtest", feature = "autobasis")))]
-    #[cfg(feature = "gen1")]
+    #[cfg(all(feature = "gen1", not(feature = "ci")))]
     pub(crate) fn pddb_get_all_keys(&self, cache: &Vec<BasisCacheEntry>) -> Option<Vec<(BasisKeys, String)>> {
         #[cfg(feature = "ux-swap-delay")]
         const SWAP_DELAY_MS: usize = 300;

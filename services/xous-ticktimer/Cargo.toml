@@ -38,7 +38,7 @@ rand_chacha = { version = "0.3.1", optional = true }
 atsama5d27 = []
 
 # you may want to remove the watchdog feature if you're debugging a crash, as it will force the system to reboot automatically
-precursor = ["utralib/precursor", "susres/precursor", "watchdog"]
+precursor = ["utralib/precursor", "susres/precursor"]
 hosted = ["utralib/hosted", "susres/hosted", "watchdog"]
 renode = ["utralib/renode", "susres/renode", "watchdog"]
 

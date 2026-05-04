@@ -153,7 +153,7 @@ exclude = [
 
 [profile.release]
 codegen-units = 1  # 1 better optimizations
-debug = false
+debug = true # adds DWARF
 strip = false
 lto = "fat"
 incremental = true

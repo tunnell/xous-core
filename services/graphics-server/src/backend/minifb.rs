@@ -348,6 +348,11 @@ impl XousKeyboardHandler {
                 Key::Up => '↑',
                 Key::Down => '↓',
                 Key::Home => '∴',
+                // Mac keyboards have no dedicated Home key, and Fn+Home
+                // doesn't reliably forward XK_Home over SSH X11. Backquote
+                // (`) is on every keyboard's top-left, rarely typed in
+                // Xous menu contexts, and serves as a fallback menu key.
+                Key::Backquote => '∴',
                 Key::Backspace => '\u{0008}',
                 Key::Delete => '\u{0008}',
                 Key::Enter => 0xd_u8.into(),
@@ -405,6 +410,11 @@ impl XousKeyboardHandler {
                 Key::Up => '↑',
                 Key::Down => '↓',
                 Key::Home => '∴',
+                // Mac keyboards have no dedicated Home key, and Fn+Home
+                // doesn't reliably forward XK_Home over SSH X11. Backquote
+                // (`) is on every keyboard's top-left, rarely typed in
+                // Xous menu contexts, and serves as a fallback menu key.
+                Key::Backquote => '∴',
                 Key::Backspace => '\u{0008}',
                 Key::Delete => '\u{0008}',
                 //Key::Space => ' ',

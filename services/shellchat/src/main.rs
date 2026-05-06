@@ -171,6 +171,17 @@ impl Repl {
             })
             .expect("couldn't register Ux context for shellchat");
 
+        // Allow the Home key (`∴`) to escape shellchat to the main menu
+        // even before PDDB has been mounted (PDDB calls allow_mainmenu
+        // after PIN unlock at services/pddb/src/main.rs:884,954, but on a
+        // fresh hosted boot or pre-PIN state the menu is otherwise
+        // trapped).
+        // Reference: tunnell/xous-signal-client PR #44 (sigchat) and
+        // ~/workdir/xous-signal-client-notes/_open-followups/chores.md
+        // ("Open question — should gam.allow_mainmenu() be standard
+        // chat-app boilerplate?")
+        gam.allow_mainmenu().ok();
+
         let content = gam.request_content_canvas(token.unwrap()).expect("couldn't get content canvas");
         log::trace!("content canvas {:?}", content);
         let screensize = gam.get_canvas_bounds(content).expect("couldn't get dimensions of content canvas");

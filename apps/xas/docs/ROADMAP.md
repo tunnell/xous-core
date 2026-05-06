@@ -1,6 +1,6 @@
 # Xous Signal Client — MVP Roadmap
 
-A staged plan for building a Signal client on Xous from a fresh repo, following the design in [`REPORT.md`](./REPORT.md). Each stage is sized to be handed to a single Claude Code session, with clear inputs, outputs, and verification.
+A staged plan for building a Signal client on Xous from a fresh repo, following the design in [`REPORT.md`](./REPORT.md). Each stage is sized to be handed to a single agent session, with clear inputs, outputs, and verification.
 
 **MVP definition.** Three hardware-confirmed flows: (1) link as secondary device, (2) receive one message, (3) send one message. Everything in service of those three.
 
@@ -14,7 +14,7 @@ The numerical numbering is preserved for stage-section references but doesn't di
 
 ## How each stage works
 
-Each stage below is a self-contained agent prompt. Hand the whole stage section to Claude Code with:
+Each stage below is a self-contained agent prompt. Hand the whole stage section to a coding agent with:
 
 > Read `ROADMAP.md` Stage N. Do everything it says. Cite source for non-trivial claims. When done, run the verification step and report results.
 

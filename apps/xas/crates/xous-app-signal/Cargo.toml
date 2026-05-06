@@ -1,0 +1,37 @@
+[package]
+name = "xous-app-signal"
+description = "Xous app: Signal client built on the Whisperfish stack (presage + libsignal-service-rs + libsignal)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+# Short pronouncable name "xas" for the on-device binary.
+name = "xas"
+path = "src/main.rs"
+
+[dependencies]
+# Stage 8: spawn the manager worker thread + drive Hello/GetWhoami
+# round-trips. The presage-store-pddb dep is direct (not just
+# transitive through the bridge) because the binary owns the store
+# and hands a clone to the worker.
+xous-signal-bridge = { path = "../xous-signal-bridge" }
+presage-store-pddb = { path = "../presage-store-pddb" }
+async-channel = { workspace = true }
+
+# Stage 1 carry-over (the smol primitives are used by the bridge
+# transitively, but the binary references nothing from them
+# directly any more — Stage 1's smoke test moved into the bridge's
+# `tests` module).
+
+# Stage 9a follow-up to Stage 6.1 phase 3f: getrandom 0.3 custom
+# backend. The cfg `getrandom_backend="custom"` set in
+# `.cargo/config.toml` for rv32-xous makes getrandom expect an
+# extern `__getrandom_v03_custom` function provided by the user
+# binary; without it the rv32 release build won't link. We import
+# the crate here just for `getrandom::Error` (the extern's return
+# type), gated to the rv32-xous target.
+[target.'cfg(target_os = "xous")'.dependencies]
+getrandom = { version = "0.3", default-features = false }

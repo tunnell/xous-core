@@ -1,0 +1,59 @@
+[package]
+name = "xous-net-bridge"
+description = "Sync TLS + WebSocket transport for the Signal client, bridged to the async executor via channels."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+# rustls 0.22.2 — the version xous-core integrates at libs/tls
+# (https://github.com/betrusted-io/xous-core/blob/main/libs/tls/Cargo.toml).
+# Pin precisely so transitive `ring` resolves to the version covered by
+# xous-core's [patch.crates-io].ring fork.
+rustls = "=0.22.2"
+rustls-pemfile = "2"
+webpki-roots = "1.0"
+
+# tungstenite is upstream snapview/tungstenite-rs, sync. Per
+# docs/REPORT.md Decision 3, we do NOT use signalapp/tungstenite-rs (that
+# fork only adds permessage-deflate, which Signal's WS doesn't require).
+# We use minimal features: the handshake itself, with no built-in TLS —
+# we wrap our existing `tls_connect` (Stage 2) externally via
+# `tungstenite::client(request, our_tls_stream)`. This keeps tungstenite
+# from pulling its own (potentially-newer) rustls version that would
+# conflict with our pinned `=0.22.2`.
+tungstenite = { version = "0.21", default-features = false, features = ["handshake"] }
+
+# Stage 6.1 phase 3d: HttpClient trait (in libsignal-service-rs) + impl
+# here. Using libsignal-service as a path dep so we can implement the
+# trait without circular-dep problems (libsignal-service doesn't depend
+# on xous-net-bridge).
+libsignal-service = { path = "../../vendor/libsignal-service-rs", default-features = false }
+
+# Sync→async bridging for the Stage 6.1 phase 3d HttpClient impl. The
+# HttpClient::execute trait method is async (returns a Future), but our
+# HTTP/1.1 client is sync (writes/reads on a TcpStream). `async-channel`
+# bridges them: the async-side awaits a oneshot, a worker thread runs the
+# sync HTTP, and posts the response back.
+async-channel = { workspace = true }
+async-trait = "0.1"
+http = "1"
+
+# Serde for JSON body decoding in the HttpClient::execute return path.
+serde = "1"
+serde_json = "1"
+
+# HTTP client encoding helpers.
+base64 = "0.22"
+tracing = "0.1"
+url = "2"
+
+[[example]]
+name = "https_get"
+path = "examples/https_get.rs"
+
+[[example]]
+name = "signal_ws_keepalive"
+path = "examples/signal_ws_keepalive.rs"

@@ -362,7 +362,10 @@ impl<'a> Menu<'a> {
         for &k in keys.iter() {
             log::debug!("got key '{}'", k);
             match k {
-                '∴' => {
+                // '∴' is the Home key (the Precursor's center button). '\u{d}'
+                // is Enter — accepted as a select alias for consistency with
+                // how modals (radiobuttons, textentry, etc.) already handle it.
+                '∴' | '\u{d}' => {
                     let mi = &self.items[self.index];
                     // give up focus before issuing the command, as some commands conflict with loss of
                     // focus...

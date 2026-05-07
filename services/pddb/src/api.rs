@@ -54,7 +54,13 @@ pub(crate) const PDDB_A_LEN: usize = precursor_hal::board::PDDB_LEN as usize;
     any(feature = "pddbtest", feature = "autobasis", feature = "ci", feature = "smalldb"),
     not(feature = "gen2")
 ))]
-pub const PDDB_A_LEN: usize = 4 * 1024 * 1024;
+// 8 MiB. The 4 MiB pddbtest default ran out the moment we exercised
+// a real flow — a Signal link writes ~3.2 MiB just for identity
+// keys, prekey bundle, sender certificate, and the bootstrap
+// sessions. 8 MiB covers link + a few hundred received messages
+// with PDDB metadata overhead (FSCB, free-pool, page AEAD) and
+// stays well under Precursor's real 98 MiB allotment.
+pub const PDDB_A_LEN: usize = 8 * 1024 * 1024;
 #[cfg(feature = "gen1")]
 pub const PDDB_A_LOC: u32 = precursor_hal::board::PDDB_LOC as u32;
 

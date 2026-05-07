@@ -2970,6 +2970,19 @@ impl PddbOs {
         for entry in cache {
             log::info!(" - {}", entry.name);
         }
+
+        // Hosted-mode shortcut: skip the secret-basis enumeration dialog
+        // and just return the known keys. The dialog is a security
+        // feature for plausible deniability on real hardware — without
+        // it, a free-space scan could overwrite pages belonging to
+        // unmounted secret bases. Hosted has only the .System basis
+        // (no secret bases possible), so the dialog is meaningless and
+        // every PDDB write that exceeds the fastspace cache otherwise
+        // produces a 3-dialog interrupt sequence to dismiss.
+        #[cfg(not(target_os = "xous"))]
+        {
+            return Some(ret);
+        }
         // In the case of a migration, the basis cache would be empty, but the system basis key is already set
         // up
         if self.dna_mode == DnaMode::Migration {

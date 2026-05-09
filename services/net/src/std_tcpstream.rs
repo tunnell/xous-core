@@ -161,6 +161,9 @@ pub(crate) fn std_tcp_rx(
     if socket.can_recv() {
         log::debug!("receiving data right away");
         let buflen = if let Some(valid) = body.valid { valid.get() } else { 0 };
+        let pre_state = socket.state();
+        let local_ep = socket.local_endpoint();
+        let remote_ep = socket.remote_endpoint();
         match socket.recv_slice(unsafe { &mut body.buf.as_slice_mut()[..buflen] }) {
             Ok(bytes) => {
                 // it's actually valid to receive 0 bytes, but the encoding of this field doesn't allow it.
@@ -171,7 +174,15 @@ pub(crate) fn std_tcp_rx(
                 log::debug!("set body.valid = {:?}", body.valid);
             }
             Err(e) => {
-                log::error!("unable to receive: {:?}", e);
+                // Same instrumentation as the waiter pump path
+                // (main.rs::tcp_rx_waiting). Both paths funnel into
+                // std-side as "recv_slice failure"; the variant +
+                // socket state tells us which branch + what state
+                // the socket was in.
+                log::warn!(
+                    "tcp_rx recv_slice err: {:?}; pre_state={:?}; local_ep={:?}; remote_ep={:?}",
+                    e, pre_state, local_ep, remote_ep,
+                );
                 respond_with_error(msg, NetError::LibraryError);
             }
         }

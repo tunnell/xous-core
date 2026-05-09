@@ -1354,6 +1354,9 @@ fn main() -> ! {
 
                     let body = env.body.memory_message_mut().unwrap();
                     let buflen = if let Some(valid) = body.valid { valid.get() } else { 0 };
+                    let pre_state = socket.state();
+                    let local_ep = socket.local_endpoint();
+                    let remote_ep = socket.remote_endpoint();
                     match socket.recv_slice(unsafe { &mut body.buf.as_slice_mut()[..buflen] }) {
                         Ok(count) => {
                             log::debug!("rxrcv of {}", count);
@@ -1361,7 +1364,23 @@ fn main() -> ! {
                             body.offset = xous::MemoryAddress::new(1);
                         }
                         Err(e) => {
-                            log::debug!("unable to receive: {:?}", e);
+                            // BUMPED debug -> warn so the variant
+                            // surfaces in default UART logs. Image-15
+                            // showed every WS death cycle ends with
+                            // `recv_slice failure` from std (a
+                            // catch-all string that erases the
+                            // smoltcp-side detail). Logging the
+                            // variant + socket state here tells us
+                            // whether the socket transitioned to
+                            // CloseWait / Closed / FinWait / etc.
+                            // before the recv_slice attempt — which
+                            // pinpoints whether the failure is
+                            // server-initiated (RST/FIN) vs
+                            // local-state-machine (smoltcp internal).
+                            log::warn!(
+                                "rxrcv recv_slice err: {:?}; pre_state={:?}; local_ep={:?}; remote_ep={:?}",
+                                e, pre_state, local_ep, remote_ep,
+                            );
                             body.offset = None;
                             body.valid = None;
                         }

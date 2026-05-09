@@ -740,12 +740,12 @@ fn main() -> ! {
                                 }
                             };
                             // if we got here, we found a message that needs to be aborted.
-                            // Image-17: bumped to warn + extra context so we can correlate
-                            // shutdown-aborts with std-side "recv_slice failure" surfacing.
-                            // Std-side: body.valid=u32::MAX is an unusual marker — std reads
-                            // offset (which stays None from initialization) → 0 → falls to
-                            // catch-all "recv_slice failure" Err. SO THIS IS A LIKELY SOURCE
-                            // of the silent failures we're chasing.
+                            // Logged at warn with full socket context so shutdown-aborts
+                            // can be correlated with std-side "recv_slice failure"
+                            // surfaces. body.valid=u32::MAX is an unusual marker — std
+                            // reads offset (which stays None from initialization) → 0 →
+                            // falls to the catch-all "recv_slice failure" Err. So a
+                            // shutdown-during-rx is one path that produces that string.
                             let socket_for_log = sockets.get_mut::<tcp::Socket>(handle);
                             log::warn!(
                                 "TcpShutdown: aborting rx_waiting handle={:?}, state={:?}, local_ep={:?}, remote_ep={:?}",
@@ -1355,7 +1355,7 @@ fn main() -> ! {
                         // this state added to handle the auto-close edge case on a remote hang-up
                         || cur_state == smoltcp::socket::tcp::State::Closed
                         {
-                            // Image-17: log clean-EOF return (state Closed/CloseWait → 0 bytes).
+                            // Log clean-EOF return (state Closed/CloseWait → 0 bytes).
                             // Std sees offset=Some(1) + valid=0 → Ok(0) → tungstenite reads
                             // ConnectionClosed. This is the "graceful close" path.
                             log::warn!(
@@ -1367,8 +1367,10 @@ fn main() -> ! {
                             body.offset = xous::MemoryAddress::new(1);
                             continue;
                         } else {
-                            // Image-17: log timeout return. Std sees code 8 →
-                            // ErrorKind::TimedOut → ws_pump treats as WouldBlock+sleep.
+                            // Log timeout return. Std sees code 8 →
+                            // ErrorKind::TimedOut → callers (e.g.
+                            // ws-pump-style readers) treat as
+                            // WouldBlock+sleep.
                             log::warn!(
                                 "rxrcv TimedOut: state={:?}; local_ep={:?}; remote_ep={:?}",
                                 cur_state, local_ep, remote_ep,
@@ -1390,19 +1392,13 @@ fn main() -> ! {
                             body.offset = xous::MemoryAddress::new(1);
                         }
                         Err(e) => {
-                            // BUMPED debug -> warn so the variant
-                            // surfaces in default UART logs. Image-15
-                            // showed every WS death cycle ends with
-                            // `recv_slice failure` from std (a
-                            // catch-all string that erases the
-                            // smoltcp-side detail). Logging the
-                            // variant + socket state here tells us
-                            // whether the socket transitioned to
-                            // CloseWait / Closed / FinWait / etc.
-                            // before the recv_slice attempt — which
-                            // pinpoints whether the failure is
-                            // server-initiated (RST/FIN) vs
-                            // local-state-machine (smoltcp internal).
+                            // Log at warn so the smoltcp-side variant
+                            // surfaces in default UART logs. Std-side
+                            // erases the detail with a generic
+                            // "recv_slice failure" catch-all string;
+                            // including the RecvError variant + socket
+                            // state here distinguishes server-initiated
+                            // RST/FIN from local-state-machine bugs.
                             log::warn!(
                                 "rxrcv recv_slice err: {:?}; pre_state={:?}; local_ep={:?}; remote_ep={:?}",
                                 e, pre_state, local_ep, remote_ep,

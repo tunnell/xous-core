@@ -139,9 +139,10 @@ pub(crate) fn std_tcp_rx(
     let body = match msg.body.memory_message_mut() {
         Some(body) => body,
         None => {
-            // Image-17: log + respond. This shouldn't fire normally
-            // (StdTcpRx is always sent as memory message); if it
-            // does, the IPC contract is broken.
+            // Shouldn't fire in normal operation (StdTcpRx is always
+            // sent as a memory message); if it does, the IPC contract
+            // is broken — log and respond with LibraryError so the
+            // caller sees something rather than blocking forever.
             log::warn!(
                 "tcp_rx LibraryError(no body): handle_idx={}",
                 connection_handle_index,
@@ -159,11 +160,11 @@ pub(crate) fn std_tcp_rx(
     let handle = match our_sockets.get(connection_handle_index) {
         Some(Some(val)) => val,
         _ => {
-            // Image-17: log + respond. NetError::Invalid surfaces in
-            // std as "recv_slice failure" (catch-all, since 4 != 8/9).
-            // Most likely cause: the connection was force-closed and
-            // the handle slot got nulled out, but std-side still has
-            // stale `fd` and tries to read.
+            // NetError::Invalid surfaces in std as "recv_slice
+            // failure" (catch-all, since 4 != 8/9 byte-1 marker).
+            // Most likely cause: the underlying TCP connection was
+            // force-closed and the handle slot got nulled out, but
+            // the std-side `fd` is stale and tries to read anyway.
             log::warn!(
                 "tcp_rx Invalid(stale handle): handle_idx={}",
                 connection_handle_index,

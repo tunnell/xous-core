@@ -61,29 +61,29 @@ pub(crate) fn respond_with_error(mut env: xous::MessageEnvelope, code: NetError)
     // This is necessary because errors are encoded as `u8` slices, but "good"
     // responses may be encoded as `u16` or `u32` slices.
     //
-    // Image-18 fix (image-17 diagnosis): the std-side Xous net backend
-    // disagrees with itself about which byte the error code lives in.
+    // The std-side Xous net backend disagrees with itself about which
+    // byte the error code lives in:
     //   library/std/src/sys/net/connection/xous/tcpstream.rs SEND path
-    //     reads `send_request.raw[4]` for the code (matches the
-    //     historical [1,1,1,1, code, 0,0,0] layout below).
+    //     reads `send_request.raw[4]` for the code.
     //   library/std/src/sys/net/connection/xous/tcpstream.rs RECV path,
     //     udp.rs RECV path, and tcplistener.rs ACCEPT path all read
-    //     `result[1]` for the code — which used to always be 1, so
+    //     `result[1]` for the code — but with the historical
+    //     [1,1,1,1, code, 0,0,0] layout, byte 1 was always 1, so
     //     ErrorKind::TimedOut and ErrorKind::WouldBlock were
     //     unreachable from the recv side.
     //
-    // The receive-side bug surfaced in xas as a death-spiral on
-    // every WebSocket: the 5s read_timeout we set fires
+    // The receive-side bug surfaced as a death-spiral on every long-
+    // lived WebSocket: a 5s TCP read_timeout fires
     // respond_with_error(NetError::TimedOut) on the kernel side, but
-    // std mapped it to "recv_slice failure" generic IO error instead
-    // of ErrorKind::TimedOut. ws_pump treated that as fatal and tore
-    // down the WS, libsignal saw the WsClosing, manager spawned a
-    // fresh WS, repeat every 5s.
+    // std mapped that to a generic "recv_slice failure" IO error
+    // instead of ErrorKind::TimedOut. Callers (e.g. tungstenite via
+    // a smoltcp TcpStream) treated it as fatal and tore down the
+    // connection, then reconnected, then repeated every 5s.
     //
-    // Fix: also write the code at byte 1 (where the buggy std-recv
-    // looks) in addition to byte 4 (where std-send looks). Both
-    // call sites now decode correctly. The "buf as u32 LE != 0"
-    // marker still holds because byte 0 is still 1.
+    // Fix: write the code at byte 1 (where the buggy std-recv looks)
+    // in addition to byte 4 (where std-send looks). Both call sites
+    // now decode correctly. The "buf as u32 LE != 0" marker still
+    // holds because byte 0 is still 1.
     *i.next()? = 1;             // byte 0 — error marker
     *i.next()? = code_u8;    // byte 1 — code (where std-recv reads)
     *i.next()? = 1;             // byte 2 — marker

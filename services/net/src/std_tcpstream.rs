@@ -139,6 +139,13 @@ pub(crate) fn std_tcp_rx(
     let body = match msg.body.memory_message_mut() {
         Some(body) => body,
         None => {
+            // Image-17: log + respond. This shouldn't fire normally
+            // (StdTcpRx is always sent as memory message); if it
+            // does, the IPC contract is broken.
+            log::warn!(
+                "tcp_rx LibraryError(no body): handle_idx={}",
+                connection_handle_index,
+            );
             respond_with_error(msg, NetError::LibraryError);
             return;
         }
@@ -152,6 +159,15 @@ pub(crate) fn std_tcp_rx(
     let handle = match our_sockets.get(connection_handle_index) {
         Some(Some(val)) => val,
         _ => {
+            // Image-17: log + respond. NetError::Invalid surfaces in
+            // std as "recv_slice failure" (catch-all, since 4 != 8/9).
+            // Most likely cause: the connection was force-closed and
+            // the handle slot got nulled out, but std-side still has
+            // stale `fd` and tries to read.
+            log::warn!(
+                "tcp_rx Invalid(stale handle): handle_idx={}",
+                connection_handle_index,
+            );
             respond_with_error(msg, NetError::Invalid);
             return;
         }

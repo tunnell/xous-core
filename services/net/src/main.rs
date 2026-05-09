@@ -739,8 +739,21 @@ fn main() -> ! {
                                     }
                                 }
                             };
-                            // if we got here, we found a message that needs to be aborted
-                            log::info!("TcpShutdown: aborting rx waiting handle: {:?}", handle);
+                            // if we got here, we found a message that needs to be aborted.
+                            // Image-17: bumped to warn + extra context so we can correlate
+                            // shutdown-aborts with std-side "recv_slice failure" surfacing.
+                            // Std-side: body.valid=u32::MAX is an unusual marker — std reads
+                            // offset (which stays None from initialization) → 0 → falls to
+                            // catch-all "recv_slice failure" Err. SO THIS IS A LIKELY SOURCE
+                            // of the silent failures we're chasing.
+                            let socket_for_log = sockets.get_mut::<tcp::Socket>(handle);
+                            log::warn!(
+                                "TcpShutdown: aborting rx_waiting handle={:?}, state={:?}, local_ep={:?}, remote_ep={:?}",
+                                handle,
+                                socket_for_log.state(),
+                                socket_for_log.local_endpoint(),
+                                socket_for_log.remote_endpoint(),
+                            );
                             match msg.body.memory_message_mut() {
                                 Some(body) => {
                                     // u32::MAX indicates a zero-length receive
@@ -1335,18 +1348,31 @@ fn main() -> ! {
 
                     // If it can't receive, then the only explanation was that it timed out
                     if !socket.can_recv() {
-                        if socket.state() == smoltcp::socket::tcp::State::CloseWait
+                        let cur_state = socket.state();
+                        let local_ep = socket.local_endpoint();
+                        let remote_ep = socket.remote_endpoint();
+                        if cur_state == smoltcp::socket::tcp::State::CloseWait
                         // this state added to handle the auto-close edge case on a remote hang-up
-                        || socket.state() == smoltcp::socket::tcp::State::Closed
+                        || cur_state == smoltcp::socket::tcp::State::Closed
                         {
-                            log::debug!("rxrcv connection closed");
+                            // Image-17: log clean-EOF return (state Closed/CloseWait → 0 bytes).
+                            // Std sees offset=Some(1) + valid=0 → Ok(0) → tungstenite reads
+                            // ConnectionClosed. This is the "graceful close" path.
+                            log::warn!(
+                                "rxrcv EOF: state={:?}; local_ep={:?}; remote_ep={:?}",
+                                cur_state, local_ep, remote_ep,
+                            );
                             let body = env.body.memory_message_mut().unwrap();
-                            log::debug!("rxrcv of {}", 0);
                             body.valid = xous::MemorySize::new(0);
                             body.offset = xous::MemoryAddress::new(1);
                             continue;
                         } else {
-                            log::debug!("rxrcv timed out");
+                            // Image-17: log timeout return. Std sees code 8 →
+                            // ErrorKind::TimedOut → ws_pump treats as WouldBlock+sleep.
+                            log::warn!(
+                                "rxrcv TimedOut: state={:?}; local_ep={:?}; remote_ep={:?}",
+                                cur_state, local_ep, remote_ep,
+                            );
                             respond_with_error(env, NetError::TimedOut);
                             continue;
                         }

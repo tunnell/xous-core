@@ -54,15 +54,41 @@ pub(crate) fn respond_with_error(mut env: xous::MessageEnvelope, code: NetError)
     body.valid = None;
     let s: &mut [u8] = unsafe { body.buf.as_slice_mut() };
     let mut i = s.iter_mut();
+    // NetError is not Copy; bind to u8 once.
+    let code_u8 = code as u8;
 
     // Duplicate error to ensure it's seen as an error regardless of byte order/return type
     // This is necessary because errors are encoded as `u8` slices, but "good"
     // responses may be encoded as `u16` or `u32` slices.
-    *i.next()? = 1;
-    *i.next()? = 1;
-    *i.next()? = 1;
-    *i.next()? = 1;
-    *i.next()? = code as u8;
+    //
+    // Image-18 fix (image-17 diagnosis): the std-side Xous net backend
+    // disagrees with itself about which byte the error code lives in.
+    //   library/std/src/sys/net/connection/xous/tcpstream.rs SEND path
+    //     reads `send_request.raw[4]` for the code (matches the
+    //     historical [1,1,1,1, code, 0,0,0] layout below).
+    //   library/std/src/sys/net/connection/xous/tcpstream.rs RECV path,
+    //     udp.rs RECV path, and tcplistener.rs ACCEPT path all read
+    //     `result[1]` for the code — which used to always be 1, so
+    //     ErrorKind::TimedOut and ErrorKind::WouldBlock were
+    //     unreachable from the recv side.
+    //
+    // The receive-side bug surfaced in xas as a death-spiral on
+    // every WebSocket: the 5s read_timeout we set fires
+    // respond_with_error(NetError::TimedOut) on the kernel side, but
+    // std mapped it to "recv_slice failure" generic IO error instead
+    // of ErrorKind::TimedOut. ws_pump treated that as fatal and tore
+    // down the WS, libsignal saw the WsClosing, manager spawned a
+    // fresh WS, repeat every 5s.
+    //
+    // Fix: also write the code at byte 1 (where the buggy std-recv
+    // looks) in addition to byte 4 (where std-send looks). Both
+    // call sites now decode correctly. The "buf as u32 LE != 0"
+    // marker still holds because byte 0 is still 1.
+    *i.next()? = 1;             // byte 0 — error marker
+    *i.next()? = code_u8;    // byte 1 — code (where std-recv reads)
+    *i.next()? = 1;             // byte 2 — marker
+    *i.next()? = 1;             // byte 3 — marker
+    *i.next()? = code_u8;    // byte 4 — code (where std-send reads)
     *i.next()? = 0;
     *i.next()? = 0;
     *i.next()? = 0;

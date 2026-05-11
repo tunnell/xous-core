@@ -262,7 +262,14 @@ impl MinifbThread {
             WIDTH as usize,
             HEIGHT as usize,
             WindowOptions {
-                scale_mode: minifb::ScaleMode::AspectRatioStretch,
+                // AspectRatioStretch leaves a black bar at the bottom and
+                // top-aligns the 336x536 framebuffer in tall windows (X11
+                // forwarding, tiling WMs), squishing the content. Stretch
+                // ignores the source aspect and fills the window; the
+                // Precursor sim isn't pixel-perfect across all hosts but at
+                // least it's fully visible. (Tracked downstream as the
+                // "minifb black-bar" fix.)
+                scale_mode: minifb::ScaleMode::Stretch,
                 resize: true,
                 ..WindowOptions::default()
             },

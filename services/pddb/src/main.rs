@@ -2310,6 +2310,157 @@ fn wrapped_main() -> ! {
                 }
             }
 
+            Opcode::WriteKeyBatch => {
+                let mut buffer = unsafe {
+                    Buffer::from_memory_message_mut(msg.body.memory_message_mut().unwrap())
+                };
+                let mut req = buffer.to_original::<PddbWriteBatch, _>().unwrap();
+
+                // Parse the packed (dict, key, value) entries from
+                // `req.data`. Wire format per entry: u8 dict_len, dict
+                // bytes, u8 key_len, key bytes, u16 value_len (LE),
+                // value bytes. Terminator: dict_len == 0.
+                let mut entries: Vec<(String, String, Vec<u8>)> = Vec::new();
+                let mut index = 0usize;
+                let mut parse_ok = true;
+                while index < MAX_PDDB_WRITE_BATCH_LEN {
+                    if req.data[index] == 0 {
+                        break; // terminator
+                    }
+                    let dict_len = req.data[index] as usize;
+                    index += 1;
+                    if dict_len > DICT_NAME_LEN - 1 || index + dict_len >= MAX_PDDB_WRITE_BATCH_LEN {
+                        log::error!("WriteKeyBatch: dict_len out of bounds at index {}", index);
+                        parse_ok = false;
+                        break;
+                    }
+                    let dict = match std::str::from_utf8(&req.data[index..index + dict_len]) {
+                        Ok(s) => s.to_string(),
+                        Err(_) => {
+                            log::error!("WriteKeyBatch: dict name not valid UTF-8");
+                            parse_ok = false;
+                            break;
+                        }
+                    };
+                    index += dict_len;
+                    if index + 1 > MAX_PDDB_WRITE_BATCH_LEN {
+                        parse_ok = false;
+                        break;
+                    }
+                    let key_len = req.data[index] as usize;
+                    index += 1;
+                    if key_len > KEY_NAME_LEN - 1 || index + key_len > MAX_PDDB_WRITE_BATCH_LEN {
+                        log::error!("WriteKeyBatch: key_len out of bounds at index {}", index);
+                        parse_ok = false;
+                        break;
+                    }
+                    let key = match std::str::from_utf8(&req.data[index..index + key_len]) {
+                        Ok(s) => s.to_string(),
+                        Err(_) => {
+                            log::error!("WriteKeyBatch: key name not valid UTF-8");
+                            parse_ok = false;
+                            break;
+                        }
+                    };
+                    index += key_len;
+                    if index + 2 > MAX_PDDB_WRITE_BATCH_LEN {
+                        parse_ok = false;
+                        break;
+                    }
+                    let value_len = u16::from_le_bytes([req.data[index], req.data[index + 1]]) as usize;
+                    index += 2;
+                    if index + value_len > MAX_PDDB_WRITE_BATCH_LEN {
+                        log::error!("WriteKeyBatch: value_len out of bounds at index {}", index);
+                        parse_ok = false;
+                        break;
+                    }
+                    let value = req.data[index..index + value_len].to_vec();
+                    index += value_len;
+                    entries.push((dict, key, value));
+                }
+
+                if !parse_ok {
+                    req.retcode = PddbRetcode::InternalError;
+                    buffer.replace(req).ok();
+                    continue;
+                }
+
+                let bname = if req.basis_specified { Some(req.basis.as_str()) } else { None };
+                log::debug!("WriteKeyBatch: {} entries (basis={:?})", entries.len(), bname);
+
+                // Apply each entry via key_update with truncate=true.
+                // Unlike Opcode::WriteKey, we do NOT sync inside the
+                // loop — the single trailing sync below amortizes the
+                // basis flush across the whole batch. That's the
+                // whole point of this opcode.
+                let mut retcode = PddbRetcode::Ok;
+                let mut written = 0usize;
+                'entries: for (dict, key, value) in &entries {
+                    // Try the explicit basis first, then fall back to
+                    // the access-list walk (matching Opcode::WriteKey).
+                    let mut entry_ok = false;
+                    for basis in basis_cache.access_list().iter() {
+                        let target = if let Some(name) = bname { name } else { basis };
+                        match basis_cache.key_update(
+                            &mut pddb_os,
+                            dict,
+                            key,
+                            value,
+                            Some(0),
+                            None,
+                            Some(target),
+                            true,
+                        ) {
+                            Ok(_) => {
+                                entry_ok = true;
+                                written += 1;
+                                break;
+                            }
+                            Err(e) => match e.kind() {
+                                std::io::ErrorKind::NotFound => continue, // try next basis
+                                std::io::ErrorKind::UnexpectedEof => {
+                                    retcode = PddbRetcode::UnexpectedEof;
+                                    break 'entries;
+                                }
+                                std::io::ErrorKind::OutOfMemory => {
+                                    retcode = PddbRetcode::DiskFull;
+                                    break 'entries;
+                                }
+                                _ => {
+                                    retcode = PddbRetcode::InternalError;
+                                    break 'entries;
+                                }
+                            },
+                        }
+                    }
+                    if !entry_ok && retcode == PddbRetcode::Ok {
+                        retcode = PddbRetcode::BasisLost;
+                        break;
+                    }
+                }
+
+                // The single trailing sync — amortizes the per-call
+                // basis flush across the whole batch.
+                if let Err(e) = basis_cache.sync(&mut pddb_os, None, false) {
+                    log::error!("WriteKeyBatch: trailing sync failed: {:?}", e);
+                    if retcode == PddbRetcode::Ok {
+                        retcode = match e.kind() {
+                            std::io::ErrorKind::OutOfMemory => PddbRetcode::DiskFull,
+                            _ => PddbRetcode::InternalError,
+                        };
+                    }
+                }
+
+                log::debug!(
+                    "WriteKeyBatch: wrote {}/{} entries, retcode={:?}",
+                    written,
+                    entries.len(),
+                    retcode
+                );
+                req.retcode = retcode;
+                buffer.replace(req).ok();
+            }
+
             Opcode::WriteKeyFlush => msg_blocking_scalar_unpack!(msg, cleanup, _, _, _, {
                 match basis_cache.sync(&mut pddb_os, None, if cleanup == 1 { true } else { false }) {
                     Ok(_) => xous::return_scalar(msg.sender, PddbRetcode::Ok.to_usize().unwrap()).unwrap(),

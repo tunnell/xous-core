@@ -264,6 +264,24 @@ pub(crate) enum Opcode {
     /// Prune the cache. Used mainly for diagnostics.
     Prune = 56,
 
+    /// Bulk write of (dict, key, value) triples in a single IPC, followed
+    /// by **one** basis sync at the end. Mirrors `DictBulkDelete`'s
+    /// shape but for writes across (potentially multiple) dictionaries.
+    ///
+    /// Each entry uses `key_update(..., truncate=true)`, so the
+    /// truncate-false legacy behavior of `WriteKey` (refs #14) does not
+    /// apply — overwriting a longer key with a shorter value leaves no
+    /// trailing bytes. Callers must NOT issue a separate `DeleteKey`
+    /// prelude as the per-call `truncate=true` is sufficient.
+    ///
+    /// The single trailing sync amortizes the per-`WriteKey` forced
+    /// basis sync (the "expensive sync operation after every write"
+    /// noted in the `Opcode::WriteKey` arm) across the batch — N writes
+    /// trigger one sync rather than N. For batches that exceed
+    /// `MAX_PDDB_WRITE_BATCH_LEN` bytes total, split into multiple
+    /// IPC calls.
+    WriteKeyBatch = 57,
+
     /// This key type could not be decoded
     InvalidOpcode = u32::MAX as _,
 }
@@ -370,6 +388,31 @@ pub(crate) struct PddbDeleteList {
     pub basis: String,
     pub dict: String,
     pub data: [u8; MAX_PDDB_DELETE_LEN],
+    pub retcode: PddbRetcode,
+}
+
+/// A structure for bulk write of (dict, key, value) triples in a single
+/// IPC. Used by `Opcode::WriteKeyBatch`. Mirrors `PddbDeleteList` in
+/// shape — fixed-size packed buffer carries the heterogeneous entries
+/// to avoid the multi-allocation cost of a `Vec<...>` over IPC.
+///
+/// Wire format inside `data`:
+///   for each entry:
+///     u8 dict_len, dict bytes (UTF-8),
+///     u8 key_len,  key bytes (UTF-8),
+///     u16 value_len (little-endian), value bytes
+///   terminator: u8 0 (a 0-length dict ends the list)
+///
+/// `MAX_PDDB_WRITE_BATCH_LEN = 3800` matches `MAX_PDDB_DELETE_LEN` so
+/// the rkyv-serialized IPC size stays comparable. Callers that need to
+/// write more than ~3800 bytes of (dict, key, value) data should split
+/// into multiple IPC calls.
+pub(crate) const MAX_PDDB_WRITE_BATCH_LEN: usize = 3800;
+#[derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+pub(crate) struct PddbWriteBatch {
+    pub basis_specified: bool,
+    pub basis: String,
+    pub data: [u8; MAX_PDDB_WRITE_BATCH_LEN],
     pub retcode: PddbRetcode,
 }
 

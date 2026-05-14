@@ -1473,12 +1473,14 @@ fn wrapped_main() -> ! {
             }
 
             Opcode::DeleteKey => {
+                let _perf_start = tt.elapsed_ms();
                 let mut buffer =
                     unsafe { Buffer::from_memory_message_mut(msg.body.memory_message_mut().unwrap()) };
                 let mut req: PddbKeyRequest = buffer.to_original::<PddbKeyRequest, _>().unwrap();
                 let bname = if req.basis_specified { Some(req.basis.as_str()) } else { None };
                 let dict = req.dict.as_str();
                 let key = req.key.as_str();
+                log::info!("perf/pddb: DeleteKey entry dict={:?} key={:?} basis={:?}", dict, key, bname);
                 match basis_cache.key_remove(&mut pddb_os, dict, key, bname, false) {
                     Ok(_) => {
                         let mut evict_list = Vec::<ApiToken>::new();
@@ -1515,6 +1517,11 @@ fn wrapped_main() -> ! {
                         _ => req.result = PddbRequestCode::InternalError,
                     },
                 }
+                log::info!(
+                    "perf/pddb: DeleteKey exit result={:?} ms={}",
+                    req.result,
+                    tt.elapsed_ms() - _perf_start
+                );
                 buffer.replace(req).unwrap();
             }
             Opcode::DictBulkDelete => {
@@ -1548,6 +1555,11 @@ fn wrapped_main() -> ! {
                 let start = tt.elapsed_ms();
                 let bname = if req.basis_specified { Some(req.basis.as_str()) } else { None };
                 let dict = req.dict.as_str();
+                let _perf_n = key_list.len();
+                log::info!(
+                    "perf/pddb: DictBulkDelete entry dict={:?} n_keys={} basis={:?}",
+                    dict, _perf_n, bname
+                );
                 match basis_cache.key_list_remove(&mut pddb_os, dict, key_list, bname) {
                     Ok(_) => req.retcode = PddbRetcode::Ok,
                     Err(e) => match e.kind() {
@@ -1555,7 +1567,10 @@ fn wrapped_main() -> ! {
                         _ => req.retcode = PddbRetcode::InternalError,
                     },
                 }
-                log::info!("Bulk delete finished in {}ms", tt.elapsed_ms() - start);
+                log::info!(
+                    "perf/pddb: DictBulkDelete exit n_keys={} retcode={:?} ms={}",
+                    _perf_n, req.retcode, tt.elapsed_ms() - start
+                );
                 buffer.replace(req).ok();
             }
             Opcode::DeleteKeyStd => {
@@ -2253,11 +2268,21 @@ fn wrapped_main() -> ! {
             }
 
             Opcode::WriteKey => {
+                let _perf_start = tt.elapsed_ms();
                 let mut buffer =
                     unsafe { Buffer::from_memory_message_mut(msg.body.memory_message_mut().unwrap()) };
                 let pbuf = PddbBuf::from_slice_mut(buffer.as_mut()); // direct translation, no serialization necessary for performance
                 let token = pbuf.token;
+                let _perf_dict;
+                let _perf_key;
+                let _perf_len = pbuf.len as usize;
                 if let Some(rec) = token_dict.get(&token) {
+                    _perf_dict = rec.dict.clone();
+                    _perf_key = rec.key.clone();
+                    log::info!(
+                        "perf/pddb: WriteKey entry dict={:?} key={:?} len={}",
+                        _perf_dict, _perf_key, _perf_len
+                    );
                     for basis in basis_cache.access_list().iter() {
                         let temp = if let Some(name) = &rec.basis { Some(name) } else { Some(basis) };
                         log::debug!("write (spec: {:?}){:?} {}", rec.basis, temp, rec.key);
@@ -2286,16 +2311,32 @@ fn wrapped_main() -> ! {
                         }
                     }
                 } else {
+                    _perf_dict = String::new();
+                    _perf_key = String::new();
+                    log::info!(
+                        "perf/pddb: WriteKey entry (no token record) len={}",
+                        _perf_len
+                    );
                     pbuf.retcode = PddbRetcode::BasisLost;
                 }
                 // we don't need a "replace" operation because all ops happen in-place
 
                 // for now, do an expensive sync operation after every write to ensure data integrity
+                let _perf_pre_sync = tt.elapsed_ms();
                 basis_cache.sync(&mut pddb_os, None, false).expect("couldn't sync basis");
+                log::info!(
+                    "perf/pddb: WriteKey exit dict={:?} key={:?} total_ms={} sync_ms={}",
+                    _perf_dict,
+                    _perf_key,
+                    tt.elapsed_ms() - _perf_start,
+                    tt.elapsed_ms() - _perf_pre_sync
+                );
             }
 
             Opcode::WriteKeyStd => {
+                let _perf_start = tt.elapsed_ms();
                 let fd = (msg.body.id() >> 16) & 0xffff;
+                log::info!("perf/pddb: WriteKeyStd entry fd={}", fd);
                 if let Some(mem) = msg.body.memory_message_mut() {
                     mem.offset = None;
                     if let Err(e) = libstd::write_key(
@@ -2308,9 +2349,15 @@ fn wrapped_main() -> ! {
                         mem.offset = xous::MemoryAddress::new(e as usize);
                     }
                 }
+                log::info!(
+                    "perf/pddb: WriteKeyStd exit fd={} ms={}",
+                    fd,
+                    tt.elapsed_ms() - _perf_start
+                );
             }
 
             Opcode::WriteKeyBatch => {
+                let _perf_start = tt.elapsed_ms();
                 let mut buffer = unsafe {
                     Buffer::from_memory_message_mut(msg.body.memory_message_mut().unwrap())
                 };
@@ -2386,6 +2433,13 @@ fn wrapped_main() -> ! {
                 }
 
                 let bname = if req.basis_specified { Some(req.basis.as_str()) } else { None };
+                let _perf_parsed = tt.elapsed_ms();
+                let _perf_entry_count = entries.len();
+                let _perf_total_bytes: usize = entries.iter().map(|(d, k, v)| d.len() + k.len() + v.len()).sum();
+                log::info!(
+                    "perf/pddb: WriteKeyBatch entry n_entries={} total_bytes={} basis={:?} parse_ms={}",
+                    _perf_entry_count, _perf_total_bytes, bname, _perf_parsed - _perf_start
+                );
                 log::debug!("WriteKeyBatch: {} entries (basis={:?})", entries.len(), bname);
 
                 // Apply each entry via key_update with truncate=true.
@@ -2441,6 +2495,7 @@ fn wrapped_main() -> ! {
 
                 // The single trailing sync — amortizes the per-call
                 // basis flush across the whole batch.
+                let _perf_pre_sync = tt.elapsed_ms();
                 if let Err(e) = basis_cache.sync(&mut pddb_os, None, false) {
                     log::error!("WriteKeyBatch: trailing sync failed: {:?}", e);
                     if retcode == PddbRetcode::Ok {
@@ -2450,6 +2505,7 @@ fn wrapped_main() -> ! {
                         };
                     }
                 }
+                let _perf_post_sync = tt.elapsed_ms();
 
                 log::debug!(
                     "WriteKeyBatch: wrote {}/{} entries, retcode={:?}",
@@ -2457,11 +2513,22 @@ fn wrapped_main() -> ! {
                     entries.len(),
                     retcode
                 );
+                log::info!(
+                    "perf/pddb: WriteKeyBatch exit n_entries={} written={} retcode={:?} total_ms={} write_loop_ms={} sync_ms={}",
+                    _perf_entry_count,
+                    written,
+                    retcode,
+                    _perf_post_sync - _perf_start,
+                    _perf_pre_sync - _perf_parsed,
+                    _perf_post_sync - _perf_pre_sync
+                );
                 req.retcode = retcode;
                 buffer.replace(req).ok();
             }
 
             Opcode::WriteKeyFlush => msg_blocking_scalar_unpack!(msg, cleanup, _, _, _, {
+                let _perf_start = tt.elapsed_ms();
+                log::info!("perf/pddb: WriteKeyFlush entry cleanup={}", cleanup);
                 match basis_cache.sync(&mut pddb_os, None, if cleanup == 1 { true } else { false }) {
                     Ok(_) => xous::return_scalar(msg.sender, PddbRetcode::Ok.to_usize().unwrap()).unwrap(),
                     Err(e) => match e.kind() {
@@ -2477,6 +2544,10 @@ fn wrapped_main() -> ! {
                             .unwrap(),
                     },
                 };
+                log::info!(
+                    "perf/pddb: WriteKeyFlush exit ms={}",
+                    tt.elapsed_ms() - _perf_start
+                );
             }),
 
             #[cfg(feature = "gen1")]

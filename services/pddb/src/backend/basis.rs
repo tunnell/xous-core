@@ -743,6 +743,11 @@ impl BasisCache {
         basis_name: Option<&str>,
         truncate: bool,
     ) -> Result<()> {
+        let _perf_start = hw.timestamp_now();
+        log::info!(
+            "perf/pddb: key_update entry dict={:?} key={:?} len={} offset={:?} alloc_hint={:?} basis={:?} truncate={}",
+            dict, key, data.len(), offset, alloc_hint, basis_name, truncate
+        );
         // we have to estimate how many pages are needed *before* we do anything, because we can't
         // mutate the page table to allocate data while we're accessing the page table. This huge gob of code
         // computes the pages needed. :-/
@@ -905,8 +910,16 @@ impl BasisCache {
                 ));
             }
 
+            log::info!(
+                "perf/pddb: key_update exit dict={:?} key={:?} len={} ms={}",
+                dict, key, data.len(), hw.timestamp_now() - _perf_start
+            );
             Ok(())
         } else {
+            log::info!(
+                "perf/pddb: key_update exit_err NotFound dict={:?} key={:?} ms={}",
+                dict, key, hw.timestamp_now() - _perf_start
+            );
             Err(Error::new(ErrorKind::NotFound, "Requested basis not found, or PDDB not mounted."))
         }
     }
@@ -1176,6 +1189,12 @@ impl BasisCache {
     }
 
     pub(crate) fn sync(&mut self, hw: &mut PddbOs, basis_name: Option<&str>, cleanup: bool) -> Result<()> {
+        let _perf_start = hw.timestamp_now();
+        let _perf_basis_count = if basis_name.is_some() { 1 } else { self.cache.len() };
+        log::info!(
+            "perf/pddb: BasisCache::sync entry basis={:?} cleanup={} n_basis={}",
+            basis_name, cleanup, _perf_basis_count
+        );
         if cleanup {
             log::info!("calling sync with cleanup!");
         }
@@ -1189,6 +1208,10 @@ impl BasisCache {
                 basis.sync(hw, cleanup)?;
             }
         }
+        log::info!(
+            "perf/pddb: BasisCache::sync exit ms={}",
+            hw.timestamp_now() - _perf_start
+        );
         Ok(())
     }
 
@@ -2020,6 +2043,8 @@ impl BasisCacheEntry {
     }
 
     pub(crate) fn sync(&mut self, hw: &mut PddbOs, cleanup: bool) -> Result<()> {
+        let _perf_basis_start = hw.timestamp_now();
+        let _perf_basis_name = self.name.clone();
         self.dicts.retain(|_name, entry| entry.flags.valid()); // prune any invalid dictionary entries, as they have been deleted
         // this is a bit awkward, but we have to make a copy of all the dictionary names
         // because otherwise we borrow self as immutable to enumerate the names, and then
@@ -2030,19 +2055,35 @@ impl BasisCacheEntry {
                 dictnames.push(dict.to_string());
             }
         }
+        let _perf_dict_count = dictnames.len();
+        log::info!(
+            "perf/pddb: BasisCacheEntry::sync entry basis={:?} n_dicts={}",
+            _perf_basis_name, _perf_dict_count
+        );
         for dict in dictnames {
+            let _perf_dict_start = hw.timestamp_now();
             if let Some(dict_entry) = self.dicts.get_mut(&dict) {
+                let _perf_pool_start = hw.timestamp_now();
                 if !dict_entry.sync_small_pool(hw, &mut self.v2p_map, &self.cipher) {
                     return Err(Error::new(ErrorKind::OutOfMemory, "Ran out of memory syncing small pool"));
                 }
+                let _perf_small_done = hw.timestamp_now();
                 dict_entry.sync_large_pool();
+                let _perf_large_done = hw.timestamp_now();
                 if cleanup {
                     // this will do a full-scan through all the key entries to discover any extra
                     // ones that are "way out" in the storage space that could have been lost
                     dict_entry.fill(hw, &mut self.v2p_map, &self.cipher, cleanup);
                 }
+                log::info!(
+                    "perf/pddb: dict_pool_sync basis={:?} dict={:?} small_ms={} large_ms={}",
+                    _perf_basis_name, dict,
+                    _perf_small_done - _perf_pool_start,
+                    _perf_large_done - _perf_small_done
+                );
             }
 
+            let _perf_dict_sync_start = hw.timestamp_now();
             match self.dict_sync(hw, &dict, cleanup) {
                 Ok(_) => {}
                 Err(e) => {
@@ -2050,9 +2091,25 @@ impl BasisCacheEntry {
                     return Err(Error::new(ErrorKind::Other, e.to_string()));
                 }
             }
+            log::info!(
+                "perf/pddb: dict_sync basis={:?} dict={:?} dict_sync_ms={} dict_total_ms={}",
+                _perf_basis_name, dict,
+                hw.timestamp_now() - _perf_dict_sync_start,
+                hw.timestamp_now() - _perf_dict_start
+            );
         }
+        let _perf_pre_basis_sync = hw.timestamp_now();
         self.basis_sync(hw);
+        let _perf_post_basis_sync = hw.timestamp_now();
         self.pt_sync(hw);
+        let _perf_post_pt_sync = hw.timestamp_now();
+        log::info!(
+            "perf/pddb: BasisCacheEntry::sync exit basis={:?} n_dicts={} basis_sync_ms={} pt_sync_ms={} total_ms={}",
+            _perf_basis_name, _perf_dict_count,
+            _perf_post_basis_sync - _perf_pre_basis_sync,
+            _perf_post_pt_sync - _perf_post_basis_sync,
+            _perf_post_pt_sync - _perf_basis_start
+        );
         Ok(())
     }
 

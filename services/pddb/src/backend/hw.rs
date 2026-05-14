@@ -571,6 +571,7 @@ impl PddbOs {
     /// patches data at an offset starting from the data physical base address, which corresponds
     /// exactly to the first entry in the page table
     pub(crate) fn patch_data(&self, data: &[u8], offset: u32) {
+        let _perf_start = self.tt.elapsed_ms();
         log::trace!("patch offset: {:x} len: {:x}", offset, data.len());
         // log::trace!("patch bef: {:x?}", &self.pddb_mr.as_slice::<u8>()[offset as usize +
         // self.data_phys_base.as_usize()..offset as usize + self.data_phys_base.as_usize() + 48]);
@@ -589,6 +590,10 @@ impl PddbOs {
             .expect("couldn't write to data region in the PDDB");
         #[cfg(all(feature = "gen2", target_os = "xous"))]
         self.patch(&data, (offset + self.data_phys_base.as_u32()) as usize);
+        log::info!(
+            "perf/pddb: patch_data offset=0x{:x} len={} ms={}",
+            offset, data.len(), self.tt.elapsed_ms() - _perf_start
+        );
         //log::trace!("patch aft: {:x?}", &self.pddb_mr.as_slice::<u8>()[offset as usize +
         // self.data_phys_base.as_usize()..offset as usize + self.data_phys_base.as_usize() + 48]);
         // log::trace!("patch end: {:x?}", &self.pddb_mr.as_slice::<u8>()[offset as usize +
@@ -727,12 +732,17 @@ impl PddbOs {
     /// a *page number* (so a physical address divided by the page size). It's a slightly awkward units, but
     /// it saves a bit of math going back and forth between the native storage formats of the records.
     pub(crate) fn pt_patch_mapping(&self, va: VirtAddr, phys_page_num: u32, cipher: &Aes256) {
+        let _perf_start = self.tt.elapsed_ms();
         let mut pte = Pte::new(va, PtFlags::CLEAN, Rc::clone(&self.entropy));
         let mut block = Block::from_mut_slice(pte.deref_mut());
         //log::info!("pte pt: {:x?}", block);
         cipher.encrypt_block(&mut block);
         //log::info!("pte ct: {:x?}", block);
         self.patch_pagetable(&block, phys_page_num * aes::BLOCK_SIZE as u32);
+        log::info!(
+            "perf/pddb: pt_patch_mapping va=0x{:x} pp={} ms={}",
+            va.get(), phys_page_num, self.tt.elapsed_ms() - _perf_start
+        );
     }
 
     /// erases a page table entry by overwriting it with garbage
@@ -1357,6 +1367,8 @@ impl PddbOs {
     /// structures were to be extended to run on say, an external USB drive with gigabytes of space,
     /// we cannot afford to naively allocate vectors that count every single page.
     fn fast_space_generate(&mut self, mut page_heap: BinaryHeap<Reverse<u32>>) -> Vec<PhysPage> {
+        let _perf_start = self.tt.elapsed_ms();
+        log::info!("perf/pddb: fast_space_generate entry (THE expensive deep scan)");
         let mut free_pool = Vec::<usize>::new();
         let max_entries = FASTSPACE_PAGES * PAGE_SIZE / size_of::<PhysPage>();
         free_pool.reserve_exact(max_entries);
@@ -1366,6 +1378,10 @@ impl PddbOs {
         let total_pages = (PDDB_A_LEN - self.data_phys_base.as_usize()) / PAGE_SIZE;
         let total_free_pages = total_pages - total_used_pages;
         log::info!("page alloc: {} used; {} free; {} total", total_used_pages, total_free_pages, total_pages);
+        log::info!(
+            "perf/pddb: fast_space_generate counts used={} free={} total={}",
+            total_used_pages, total_free_pages, total_pages
+        );
         if total_free_pages == 0 {
             log::warn!("Disk is out of space, no free pages available!");
             // return an empty free_pool vector.
@@ -1435,6 +1451,10 @@ impl PddbOs {
             pp.set_valid(true);
             page_pool.push(pp);
         }
+        log::info!(
+            "perf/pddb: fast_space_generate exit pool_size={} total_ms={}",
+            page_pool.len(), self.tt.elapsed_ms() - _perf_start
+        );
         page_pool
     }
 
@@ -1710,6 +1730,8 @@ impl PddbOs {
     /// is available before doing an allocation, and if not, we mutate the map to populate new free space;
     /// and if so, we mutate the map to remove the allocated page.
     pub fn try_fast_space_alloc(&mut self) -> Option<PhysPage> {
+        let _perf_start = self.tt.elapsed_ms();
+        let _perf_pool_len = self.fspace_cache.len();
         // 1. Confirm that the fspace_log_next_addr is valid. If not, regenerate it, or fail.
         if !self.fast_space_ensure_next_log() {
             log::warn!("Couldn't ensure fast space log entry: {}", self.fspace_log_len);
@@ -1777,6 +1799,13 @@ impl PddbOs {
                     "inconsistent state: we found a free page, but later when we tried to update it, it wasn't there!"
                 );
             }
+            log::info!(
+                "perf/pddb: try_fast_space_alloc exit found={} pool_was={} pool_now={} ms={}",
+                maybe_alloc.is_some(),
+                _perf_pool_len,
+                self.fspace_cache.len(),
+                self.tt.elapsed_ms() - _perf_start
+            );
             maybe_alloc
         }
     }
@@ -1875,6 +1904,7 @@ impl PddbOs {
 
     /// This is a "fast" flush that expires all the PDDB SpaceUpdate journal
     pub(crate) fn fast_space_flush(&mut self) {
+        let _perf_start = self.tt.elapsed_ms();
         let mut fast_space = FastSpace { free_pool: [PhysPage(0); FASTSPACE_FREE_POOL_LEN] };
         for pp in fast_space.free_pool.iter_mut() {
             pp.set_journal(self.trng_u8() % FSCB_JOURNAL_RAND_RANGE)
@@ -1883,6 +1913,8 @@ impl PddbOs {
         for (&src, dst) in self.fspace_cache.iter().zip(fast_space.free_pool.iter_mut()) {
             *dst = src;
         }
+        let _perf_pool_count = fast_space.free_pool.len();
+        log::info!("perf/pddb: fast_space_flush entry pool_count={}", _perf_pool_count);
         log::info!("SpaceUpdate flush with {} pages", fast_space.free_pool.len());
         let start = self.timestamp_now();
         // write just commits a new record to disk, but doesn't update our internal data cache
@@ -1894,6 +1926,10 @@ impl PddbOs {
         // this will locate the next fast space log point.
         self.fast_space_ensure_next_log();
         log::info!("Flush took {}ms", self.timestamp_now() - start);
+        log::info!(
+            "perf/pddb: fast_space_flush exit pool_count={} ms={}",
+            _perf_pool_count, self.tt.elapsed_ms() - _perf_start
+        );
     }
 
     pub(crate) fn data_aad(&self, name: &str) -> Vec<u8> {
@@ -2019,6 +2055,7 @@ impl PddbOs {
         data: &mut [u8],
         pp: &PhysPage,
     ) {
+        let _perf_start = self.tt.elapsed_ms();
         assert!(
             data.len() == VPAGE_SIZE + size_of::<JournalType>(),
             "did not get a page-sized region to patch"
@@ -2029,10 +2066,18 @@ impl PddbOs {
             *dst = src;
         }
         let nonce = self.nonce_gen();
+        let _perf_pre_encrypt = self.tt.elapsed_ms();
         let ciphertext = cipher.encrypt(&nonce, Payload { aad, msg: &data }).expect("couldn't encrypt data");
+        let _perf_post_encrypt = self.tt.elapsed_ms();
         // log::trace!("calling patch. nonce {:x?}, ct {:x?}, data {:x?}", nonce.as_slice(),
         // &ciphertext[..32], &data[..32]);
         self.patch_data(&[nonce.as_slice(), &ciphertext].concat(), pp.page_number() * PAGE_SIZE as u32);
+        log::info!(
+            "perf/pddb: data_encrypt_and_patch_page page_no={} encrypt_ms={} total_ms={}",
+            pp.page_number(),
+            _perf_post_encrypt - _perf_pre_encrypt,
+            self.tt.elapsed_ms() - _perf_start
+        );
     }
 
     /// `data` includes the journal entry on top.
@@ -2046,6 +2091,7 @@ impl PddbOs {
         data: &mut [u8],
         pp: &PhysPage,
     ) {
+        let _perf_start = self.tt.elapsed_ms();
         use aes::cipher::KeyInit;
         assert!(data.len() == KCOM_CT_LEN, "did not get a key-commit sized region to patch");
         // updates the journal type
@@ -2080,6 +2126,11 @@ impl PddbOs {
         log::trace!("nonce: {:x?}", &nonce);
         log::debug!("dest_page[kcom_nonce]: {:x?}", &dest_page[12 + 4004..12 + 4004 + 32]);
         self.patch_data(&dest_page, pp.page_number() * PAGE_SIZE as u32);
+        log::info!(
+            "perf/pddb: data_encrypt_and_patch_page_with_commit page_no={} total_ms={}",
+            pp.page_number(),
+            self.tt.elapsed_ms() - _perf_start
+        );
     }
 
     /// Derive a key commitment. This takes in a base `key`, which is 256 bits;

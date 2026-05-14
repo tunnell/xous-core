@@ -63,9 +63,9 @@ impl<'a> ShellCmdApi<'a> for PddbCmd {
     fn process(&mut self, args: String, _env: &mut CommonEnv) -> Result<Option<String>, xous::Error> {
         let mut ret = String::new();
         #[cfg(not(feature = "pddbtest"))]
-        let helpstring = "pddb [basislist] [basiscreate] [basisunlock] [basislock] [basisdelete] [default]\n[dictlist] [keylist] [write] [writeover] [query] [copy] [dictdelete] [keydelete] [churn] [flush] [sync]";
+        let helpstring = "pddb [basislist] [basiscreate] [basisunlock] [basislock] [basisdelete] [default]\n[dictlist] [keylist] [write] [writeover] [query] [copy] [dictdelete] [keydelete] [churn] [flush] [sync] [bulk_probe N]";
         #[cfg(feature = "pddbtest")]
-        let helpstring = "pddb [basislist] [basiscreate] [basisunlock] [basislock] [basisdelete] [default]\n[dictlist] [keylist] [write] [writeover] [query] [copy] [dictdelete] [keydelete] [churn] [flush] [sync]\n[test]";
+        let helpstring = "pddb [basislist] [basiscreate] [basisunlock] [basislock] [basisdelete] [default]\n[dictlist] [keylist] [write] [writeover] [query] [copy] [dictdelete] [keydelete] [churn] [flush] [sync] [bulk_probe N]\n[test]";
 
         let mut tokens = args.split(' ');
         if let Some(sub_cmd) = tokens.next() {
@@ -419,6 +419,137 @@ impl<'a> ShellCmdApi<'a> for PddbCmd {
                         precursor_hal::board::BOOKEND_START,
                         precursor_hal::board::BOOKEND_END
                     );
+                }
+                "bulk_probe" => {
+                    // A/B benchmark for Opcode::WriteKeyBatch.
+                    //
+                    // Path A: N × (delete_key + get(create_dict=true,
+                    //              create_key=true) + write)
+                    //   — each `key.write(...)` issues `Opcode::WriteKey`
+                    //   which triggers the per-write `basis_cache.sync(...)`
+                    //   at `services/pddb/src/main.rs:2294`.
+                    //
+                    // Path B: 1 × `pddb.write_batch(entries, None)`
+                    //   — wraps `Opcode::WriteKeyBatch` (added on
+                    //   feat/pddb-bulk-write). Internally applies each
+                    //   entry with `truncate=true` and runs ONE trailing
+                    //   `basis_cache.sync(...)` after the whole batch.
+                    //
+                    // Output mirrors the xas-side `probe_bulk_ab` UART
+                    // line shape so any existing analysis (the
+                    // 2026-05-12-bulk-write-impl-notes.md template) can
+                    // ingest both.
+                    //
+                    // Usage: `pddb bulk_probe [N]`  (N defaults to 3,
+                    // clamped to 1..=16). Payload is 200 bytes —
+                    // approximates the median cold-send write size
+                    // (33-byte identity, 300-byte sender_cert,
+                    // 200-500-byte save_message).
+                    use std::time::Instant;
+                    const DICT: &str = "shellchat.bulk_probe";
+                    let n: usize = tokens.next().and_then(|s| s.parse().ok()).unwrap_or(3);
+                    let n = n.clamp(1, 16);
+                    let payload: Vec<u8> = vec![0xAB; 200];
+                    let key_names: Vec<std::string::String> =
+                        (0..n).map(|i| format!("k{:02}", i)).collect();
+
+                    log::info!("probe-bulk-ab: starting");
+                    writeln!(ret, "probe-bulk-ab: starting N={}", n).ok();
+
+                    // Pre-cleanup: drop any state left from a prior run.
+                    let _ = self.pddb.delete_dict(DICT, None);
+                    let _ = self.pddb.sync();
+
+                    // -- Path A: N individual writes.
+                    let phase = Instant::now();
+                    let mut a_ok = true;
+                    for k in &key_names {
+                        let _ = self.pddb.delete_key(DICT, k, None);
+                        match self.pddb.get(DICT, k, None, true, true, Some(256), None::<fn()>) {
+                            Ok(mut handle) => {
+                                if let Err(e) = handle.write(&payload) {
+                                    log::warn!("probe-bulk-ab: PathA write({}) FAIL: {:?}", k, e);
+                                    writeln!(ret, "PathA write({}) FAIL: {:?}", k, e).ok();
+                                    a_ok = false;
+                                    break;
+                                }
+                            }
+                            Err(e) => {
+                                log::warn!("probe-bulk-ab: PathA get({}) FAIL: {:?}", k, e);
+                                writeln!(ret, "PathA get({}) FAIL: {:?}", k, e).ok();
+                                a_ok = false;
+                                break;
+                            }
+                        }
+                    }
+                    let path_a = phase.elapsed();
+                    if a_ok {
+                        let total_us = path_a.as_micros();
+                        let per_us = total_us / n as u128;
+                        log::info!(
+                            "probe-bulk-ab: PathA {} x put took {}us total (~{}us/put)",
+                            n, total_us, per_us
+                        );
+                        writeln!(
+                            ret,
+                            "PathA {} x put: {}us total (~{}us/put)",
+                            n, total_us, per_us
+                        )
+                        .ok();
+                    }
+
+                    // Mid-cleanup so Path B doesn't pay for re-allocating
+                    // pages already used by Path A.
+                    let _ = self.pddb.delete_dict(DICT, None);
+                    let _ = self.pddb.sync();
+
+                    // -- Path B: one write_batch with N entries.
+                    let entries: Vec<(&str, &str, &[u8])> = key_names
+                        .iter()
+                        .map(|k| (DICT, k.as_str(), payload.as_slice()))
+                        .collect();
+                    let phase = Instant::now();
+                    let b_ok = match self.pddb.write_batch(&entries, None) {
+                        Ok(()) => true,
+                        Err(e) => {
+                            log::warn!("probe-bulk-ab: PathB write_batch FAIL: {:?}", e);
+                            writeln!(ret, "PathB write_batch FAIL: {:?}", e).ok();
+                            false
+                        }
+                    };
+                    let path_b = phase.elapsed();
+                    if b_ok {
+                        let total_us = path_b.as_micros();
+                        let per_us = total_us / n as u128;
+                        log::info!(
+                            "probe-bulk-ab: PathB 1 x put_batch({}) took {}us total (~{}us/entry)",
+                            n, total_us, per_us
+                        );
+                        writeln!(
+                            ret,
+                            "PathB 1 x put_batch({}): {}us total (~{}us/entry)",
+                            n, total_us, per_us
+                        )
+                        .ok();
+                    }
+
+                    // Post-cleanup so the device is left tidy.
+                    let _ = self.pddb.delete_dict(DICT, None);
+                    let _ = self.pddb.sync();
+
+                    if a_ok && b_ok && path_b.as_micros() > 0 {
+                        let ratio = path_a.as_micros() as f64 / path_b.as_micros() as f64;
+                        log::info!(
+                            "probe-bulk-ab: ratio path_a/path_b = {:.2}x (higher = bulk-write is faster)",
+                            ratio
+                        );
+                        writeln!(ret, "Ratio path_a/path_b = {:.2}x", ratio).ok();
+                    } else {
+                        log::info!("probe-bulk-ab: ratio skipped (one or both paths failed)");
+                        writeln!(ret, "Ratio skipped (one or both paths failed)").ok();
+                    }
+                    log::info!("probe-bulk-ab: probe done");
+                    writeln!(ret, "probe-bulk-ab: probe done").ok();
                 }
                 "hwtest" => {
                     let mut args = [0u32; 4];

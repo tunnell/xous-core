@@ -361,6 +361,7 @@ impl BasisCache {
             log::debug!("adding dictionary {}", name);
             basis.dicts.insert(String::from(name), dict_cache);
             basis.num_dicts += 1;
+            basis.mark_dirty(name);
             // encrypt and write the dict entry to disk
             basis.dict_sync(hw, name, false)?;
             // sync the root basis structure as well, while we're at it...
@@ -458,6 +459,8 @@ impl BasisCache {
             basis.age = basis.age.saturating_add(1);
             basis.clean = false;
             basis.dict_delete(hw, dict, paranoid)?;
+            // Clear any pending dirty marker — the dict is gone now.
+            basis.mark_clean(dict);
             basis.basis_sync(hw);
             basis.pt_sync(hw);
             Ok(())
@@ -668,6 +671,7 @@ impl BasisCache {
                         ));
                     }
                     dict_entry.sync_large_pool();
+                    basis.mark_dirty(dict);
                     // encrypt and write the dict entry to disk
                     basis.dict_sync(hw, dict, false)?;
                     // sync the root basis structure as well, while we're at it...
@@ -715,6 +719,7 @@ impl BasisCache {
                     return Err(Error::new(ErrorKind::OutOfMemory, "Ran out of memory syncing small pool"));
                 }
                 dict_entry.sync_large_pool();
+                basis.mark_dirty(dict);
                 // encrypt and write the dict entry to disk
                 basis.dict_sync(hw, dict, false)?;
                 // sync the root basis structure as well, while we're at it...
@@ -897,6 +902,7 @@ impl BasisCache {
                 // "something" at this point, once we do have them.
                 dict_entry.sync_large_pool();
 
+                basis.mark_dirty(dict);
                 // encrypt and write the dict entry to disk
                 basis.dict_sync(hw, dict, false)?;
                 // sync the root basis structure as well, while we're at it...
@@ -1381,6 +1387,16 @@ pub(crate) struct BasisCacheEntry {
     pub policy: BasisRetentionPolicy,
     // rention state
     pub policy_state: u32,
+    /// Names of dicts mutated since the last `BasisCacheEntry::sync`
+    /// invocation. Drained at sync exit (selective-sync path).
+    ///
+    /// Mutation sites must call `mark_dirty()` so the next sync walks
+    /// only the touched dicts instead of the full 22+ dict iteration.
+    /// Missing a mark-dirty leaves a dict's small-pool data in RAM
+    /// without flushing — exactly the kind of bug the iter-1 trace
+    /// would surface as a delayed read returning stale state. The
+    /// audit list is in the iter-2 handoff doc.
+    pub dirty_dicts: std::collections::HashSet<String>,
 }
 impl BasisCacheEntry {
     /// given a pointer to the hardware, name of the basis, and its cryptographic key, try to derive
@@ -1453,6 +1469,7 @@ impl BasisCacheEntry {
                     large_alloc_ptr: None,
                     policy,
                     policy_state: policy.derive_init_state(),
+                    dirty_dicts: std::collections::HashSet::new(),
                 };
                 if !lazy {
                     bcache.populate_caches(hw);
@@ -1477,6 +1494,24 @@ impl BasisCacheEntry {
         if maybe_end > self.large_alloc_ptr.unwrap_or(PageAlignedVa::from(LARGE_POOL_START)).as_u64() {
             self.large_alloc_ptr = Some(PageAlignedVa::from(maybe_end));
         }
+    }
+
+    /// Record that the named dict was mutated. Callers must invoke this
+    /// at every site that mutates dict state (key_update, key_remove,
+    /// dict_add, etc.). The next `sync(cleanup=false)` walks only the
+    /// dicts in this set.
+    ///
+    /// Insert is idempotent; multiple marks coalesce. The set is
+    /// drained at sync exit.
+    pub(crate) fn mark_dirty(&mut self, name: &str) {
+        self.dirty_dicts.insert(name.to_string());
+    }
+
+    /// Forget a dict's dirty marker. Called when the dict is fully
+    /// removed (dict_delete) so a subsequent sync doesn't try to walk
+    /// the now-absent entry.
+    pub(crate) fn mark_clean(&mut self, name: &str) {
+        self.dirty_dicts.remove(name);
     }
 
     /// do a deep scan of all the dictionaries and keys and attempt to populate all the caches
@@ -1650,6 +1685,9 @@ impl BasisCacheEntry {
             self.num_dicts -= 1;
             // remove the cache entry
             self.dicts.remove(name);
+            // clear any pending dirty marker — the dict is gone now;
+            // a subsequent sync should not try to walk it.
+            self.dirty_dicts.remove(name);
 
             Ok(())
         } else {
@@ -2046,19 +2084,53 @@ impl BasisCacheEntry {
         let _perf_basis_start = hw.timestamp_now();
         let _perf_basis_name = self.name.clone();
         self.dicts.retain(|_name, entry| entry.flags.valid()); // prune any invalid dictionary entries, as they have been deleted
-        // this is a bit awkward, but we have to make a copy of all the dictionary names
-        // because otherwise we borrow self as immutable to enumerate the names, and then
-        // we borrow it as mutable to do the sync. This deep-copy works around the issue.
-        let mut dictnames = Vec::<String>::new();
-        for (dict, entry) in self.dicts.iter() {
-            if entry.flags.valid() {
-                dictnames.push(dict.to_string());
+
+        // Iter-2 selective-sync: in the common path (cleanup=false) walk only
+        // dicts marked dirty since the last sync. Iter-1 measurements showed
+        // ~14 ms of framework overhead per dict even when no work was needed,
+        // dominated by per-dict log + small_pool scan. With 22 dicts in
+        // `.System` and only 1 actually touched per WriteKey, this is the
+        // single largest measurable cost that doesn't touch deniability or
+        // vendored crypto.
+        //
+        // The `cleanup=true` path keeps the full iterate-all-dicts behavior:
+        // it's used by `BasisCache::cache_prune` and explicit
+        // `WriteKeyFlush(cleanup=1)` invocations to find lost records, and
+        // needs to walk every dict by design.
+        //
+        // basis_sync + pt_sync below run unconditionally — basis-root and
+        // page-table writes depend on basis-level state (age bumps, v2p
+        // changes) that may have advanced even without per-dict work, and
+        // they short-circuit cheaply on a clean basis.
+        //
+        // The HashSet is drained at the end (success path only) so a
+        // mid-sync error path leaves dirty markers in place for retry.
+        let dictnames: Vec<String> = if cleanup {
+            let mut names = Vec::<String>::new();
+            for (dict, entry) in self.dicts.iter() {
+                if entry.flags.valid() {
+                    names.push(dict.to_string());
+                }
             }
-        }
+            names
+        } else {
+            // Selective: only the dicts mutated since last sync. Filter
+            // against `self.dicts` in case a dirty marker survived a
+            // dict_delete by some path we didn't catch.
+            self.dirty_dicts
+                .iter()
+                .filter(|n| {
+                    self.dicts.get(*n).map(|e| e.flags.valid()).unwrap_or(false)
+                })
+                .cloned()
+                .collect()
+        };
         let _perf_dict_count = dictnames.len();
+        let _perf_dirty_set_size = self.dirty_dicts.len();
+        let _perf_total_dicts = self.dicts.len();
         log::info!(
-            "perf/pddb: BasisCacheEntry::sync entry basis={:?} n_dicts={}",
-            _perf_basis_name, _perf_dict_count
+            "perf/pddb: BasisCacheEntry::sync entry basis={:?} n_dicts={} dirty_set_size={} total_dicts={} cleanup={}",
+            _perf_basis_name, _perf_dict_count, _perf_dirty_set_size, _perf_total_dicts, cleanup
         );
         for dict in dictnames {
             let _perf_dict_start = hw.timestamp_now();
@@ -2103,6 +2175,12 @@ impl BasisCacheEntry {
         let _perf_post_basis_sync = hw.timestamp_now();
         self.pt_sync(hw);
         let _perf_post_pt_sync = hw.timestamp_now();
+        // All dicts we just walked are now durable on disk. Drain the
+        // dirty set on the success path so the next sync only walks
+        // newly mutated dicts. On the cleanup=true path we still drain
+        // — the explicit deep scan re-syncs every valid dict so any
+        // dirty marker is satisfied.
+        self.dirty_dicts.clear();
         log::info!(
             "perf/pddb: BasisCacheEntry::sync exit basis={:?} n_dicts={} basis_sync_ms={} pt_sync_ms={} total_ms={}",
             _perf_basis_name, _perf_dict_count,

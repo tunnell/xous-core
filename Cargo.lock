@@ -3940,6 +3940,7 @@ dependencies = [
  "locales",
  "log",
  "modals",
+ "net-scheduling",
  "num-derive 0.4.2",
  "num-traits",
  "pddb",
@@ -3956,6 +3957,10 @@ dependencies = [
  "xous-ipc 0.10.10 (registry+https://github.com/rust-lang/crates.io-index)",
  "xous-semver",
 ]
+
+[[package]]
+name = "net-scheduling"
+version = "0.1.0"
 
 [[package]]
 name = "new_debug_unreachable"

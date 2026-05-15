@@ -143,6 +143,21 @@ pub(crate) fn std_tcp_rx(
             return;
         }
     };
+    // Diagnostic: log body.offset on entry. Pairs with the
+    // `perf/net: tls_socket_timeouts ... read_timeout_get=...` log on
+    // the xas side (`crates/xous-net-bridge/src/tls.rs`) to determine
+    // whether libstd's TcpStream::set_read_timeout is being plumbed
+    // through to per-IPC body.offset on Xous. Suspected root cause of
+    // the WS mutex_wait_ms=80-90s pattern: if body.offset is None on
+    // every read, expiry below stays None, the rx_waiting reaper at
+    // services/net/src/main.rs:1306 never fires the 5s timeout, and
+    // reads block until TCP retransmit budget exhausts (~89s).
+    log::info!(
+        "perf/net: std_tcp_rx entry handle_idx={} body.offset={:?} nonblocking={}",
+        connection_handle_index,
+        body.offset.map(|x| x.get()),
+        nonblocking,
+    );
     let expiry =
         body.offset.map(|x| unsafe { NonZeroU64::new_unchecked(x.get() as u64 + timer.elapsed_ms()) });
 

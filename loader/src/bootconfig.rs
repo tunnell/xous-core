@@ -231,6 +231,17 @@ impl BootConfig {
             println!("    map pa {:x} -> va {:x} (satp {:x})", phys, virt, root as *mut PageTable as u32);
         }
         assert!(!(phys == 0 && flags & FLG_VALID != 0), "cannot map zero page");
+        // W^X invariant: no page is mapped both writable and executable. A
+        // violation here means a write bug could also plant code -- the thing
+        // this loader deliberately avoids. Cheap (map_page runs only at boot)
+        // and self-checking: any regression that reintroduces a W+X mapping
+        // trips this on the next CI boot.
+        assert!(
+            !(flags & FLG_W != 0 && flags & FLG_X != 0),
+            "W^X violation: va {:08x} mapped with W+X (flags {:x})",
+            virt,
+            flags
+        );
         if flags & FLG_VALID != 0 {
             #[cfg(not(feature = "swap"))]
             self.change_owner(owner, phys);

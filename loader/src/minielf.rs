@@ -222,12 +222,14 @@ impl MiniElf {
             if VDBG {
                 println!("    Section @ {:08x}", section.virt as usize);
             }
+            // Honor the section's own flags (W^X): map executable only when the
+            // section is executable, writable only when it is writable, rather
+            // than making every section R|W|X. MINIELF_FLG_W = 1, _X = 4.
             let flag_defaults = FLG_U
                 | FLG_R
-                | FLG_X
                 | FLG_VALID
-                | if section.flags() & 1 == 1 { FLG_W } else { 0 }
-                | if section.flags() & 4 == 4 { FLG_X } else { 0 };
+                | if section.flags() & MINIELF_FLG_W as usize != 0 { FLG_W } else { 0 }
+                | if section.flags() & MINIELF_FLG_X as usize != 0 { FLG_X } else { 0 };
 
             let copy_to_ram = ((section.flags() as u8) & MINIELF_FLG_W) != 0;
             if (section.virt as usize) < previous_addr {

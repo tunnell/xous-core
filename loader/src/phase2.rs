@@ -555,7 +555,11 @@ impl ProgramDescription {
                 satp,
                 load_offset + offset + rounded_data_bss,
                 self.text_offset as usize + offset,
-                flag_defaults | FLG_X | FLG_VALID,
+                // Text is R|X, not R|W|X: strip the writable bit from the
+                // defaults so a write bug can't also plant instructions here
+                // (W^X). The loader populates these pages via their physical
+                // address before this mapping, so dropping W is safe.
+                (flag_defaults & !FLG_W) | FLG_X | FLG_VALID,
                 pid as XousPid,
             );
         }

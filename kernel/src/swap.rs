@@ -3,7 +3,11 @@
 
 use core::cmp::Ordering;
 
+#[cfg(feature = "bao1x")]
 use bao1x_hal::udma::FLASH_SECTOR_LEN;
+// Non-bao1x targets don't link bao1x-hal; the SPINOR flash sector length is the same (4 KiB).
+#[cfg(not(feature = "bao1x"))]
+const FLASH_SECTOR_LEN: usize = 0x1000;
 use loader::SWAP_FLG_WIRED;
 use xous_kernel::SWAPPER_PID;
 use xous_kernel::arch::EXCEPTION_STACK_TOP;

@@ -130,4 +130,8 @@ impl SwapHal {
     pub fn flash_read(&mut self, _buf: &mut [u8], _offset: usize) {
         // dummy
     }
+
+    pub fn block_erase(&mut self, _block: usize, _len: usize) {
+        // dummy
+    }
 }

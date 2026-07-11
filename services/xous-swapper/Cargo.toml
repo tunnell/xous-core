@@ -38,9 +38,9 @@ board-baosec = ["bao1x-hal/board-baosec", "bao1x"]
 board-baosor = ["bao1x-hal/board-baosor", "bao1x"]
 board-dabao = ["bao1x-hal/board-dabao", "bao1x"]
 
-precursor = ["utralib/precursor", "precursor-hal"]
+precursor = ["utralib/precursor", "precursor-hal", "loader"]
 hosted = ["utralib/hosted"]
-renode = ["utralib/renode", "precursor-hal"]
+renode = ["utralib/renode", "precursor-hal", "loader"]
 swap-userspace-testing = []
 oom-doom = []
 

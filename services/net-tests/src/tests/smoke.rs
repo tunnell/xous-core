@@ -221,7 +221,6 @@ pub fn tcp_local_peer_addr() {
 pub fn udp_send_recv_self_ip() { udp_roundtrip(self_ip()); }
 
 /// Same roundtrip over 127.0.0.1.
-/// XFAIL: std_udp force-rebinds every socket to iface.ipv4_addr(), so a
 /// datagram addressed to 127.0.0.1 matches no socket, services/net/src/std_udp.rs.
 pub fn udp_send_recv_loopback() { udp_roundtrip(LOOPBACK); }
 
@@ -385,6 +384,5 @@ pub const XFAILS: &[(&str, &str)] = &[
     ("smoke::tcp_connect_refused", "NTC-6"),
     ("smoke::tcp_shutdown_write", "NTC-4"),
     ("smoke::tcp_close_idle_listener", "NTC-5"),
-    ("smoke::udp_send_recv_loopback", "NTC-2"),
     ("smoke::tcp_read_timeout_quiet", "NTC-1"),
 ];

@@ -765,6 +765,7 @@ fn main() -> ! {
                     &mut sockets,
                     &mut tcp_tx_waiting,
                     process_sockets.entry(pid).or_default(),
+                    nonblocking,
                 );
                 xous::try_send_message(
                     net_conn,

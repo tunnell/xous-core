@@ -77,6 +77,7 @@ pub(crate) fn std_tcp_tx(
     sockets: &mut SocketSet,
     tcp_tx_waiting: &mut Vec<Option<WaitingSocket>>,
     our_sockets: &Vec<Option<SocketHandle>>,
+    nonblocking: bool,
 ) {
     let connection_handle_index = (msg.body.id() >> 16) & 0xffff;
     let body = match msg.body.memory_message_mut() {
@@ -98,6 +99,17 @@ pub(crate) fn std_tcp_tx(
     let socket = sockets.get_mut::<tcp::Socket>(*handle);
     // handle the case that the connection closed due to the receiver quitting
     if !socket.can_send() {
+        if nonblocking {
+            if socket.state() == tcp::State::Closed {
+                // the socket is gone: report what a parked writer would eventually get
+                // from the pump (the client surfaces this as BrokenPipe), not a
+                // WouldBlock that would invite retrying a dead socket
+                respond_with_error(msg, NetError::TimedOut);
+            } else {
+                respond_with_error(msg, NetError::WouldBlock);
+            }
+            return;
+        }
         log::trace!("tx can't send, will retry");
         let expiry =
             body.offset.map(|x| unsafe { NonZeroU64::new_unchecked(x.get() as u64 + timer.elapsed_ms()) });

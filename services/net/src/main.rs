@@ -93,6 +93,10 @@ struct AcceptingSocket {
     env: xous::MessageEnvelope,
     handle: SocketHandle,
     fd: usize,
+    /// Local port of the listener this accept parked on. `None` until the port is known: smoltcp exposes
+    /// no local endpoint while a socket is in the Listen state, so the port is usually recovered by the
+    /// pump's accept scan once the parked socket has gone active.
+    local_port: Option<u16>,
 }
 
 pub struct UdpStdState {
@@ -1585,16 +1589,82 @@ fn main() -> ! {
                 // log::trace!("pump: tcp listen");
                 for connection in tcp_accept_waiting.iter_mut() {
                     let ep: IpEndpoint;
-                    let AcceptingSocket { mut env, handle: _, fd } = match connection {
+                    let fd: usize;
+                    let mut env = match connection {
                         &mut None => continue,
                         Some(s) => {
-                            let socket = sockets.get_mut::<tcp::Socket>(s.handle);
-                            if socket.is_active() {
+                            // Look the parked handle up without `SocketSet::get`, which panics if the
+                            // handle was removed (a listener closed while an accept was parked).
+                            let socket = match sockets.iter().find(|(h, _)| *h == s.handle) {
+                                Some((_, smoltcp::socket::Socket::Tcp(socket))) => socket,
+                                _ => continue,
+                            };
+                            if !socket.is_active() {
+                                continue;
+                            }
+                            if !tcp_server_remote_close_poll.contains(&s.handle) {
+                                // Unclaimed: hand this connection to this waiter. Membership in
+                                // `tcp_server_remote_close_poll` doubles as the hand-out record (pushed
+                                // on hand-out, kept until full close): one connection, one accept.
                                 tcp_server_remote_close_poll.push(s.handle);
                                 ep = socket.remote_endpoint().expect("TCP socket lacked remote endpoint");
-                                connection.take().unwrap()
+                                fd = s.fd;
+                                connection.take().unwrap().env
                             } else {
-                                continue;
+                                // Already handed to a concurrent accept on a cloned listener: serve this
+                                // waiter with the next unclaimed active connection on the same listen
+                                // port in the same process (the winner replenished the listener).
+                                let port = match s.local_port {
+                                    Some(port) => port,
+                                    None => {
+                                        // smoltcp exposes no local endpoint in Listen state: recover the port
+                                        // from the handed-out socket (accepted sockets keep the listener's
+                                        // port) and remember it in case that socket dies while we're parked.
+                                        match socket.local_endpoint() {
+                                            Some(local) => {
+                                                s.local_port = Some(local.port);
+                                                local.port
+                                            }
+                                            None => continue,
+                                        }
+                                    }
+                                };
+                                let pid = s.env.sender.pid();
+                                let socket_table = match process_sockets.get(&pid) {
+                                    Some(table) => table,
+                                    None => continue,
+                                };
+                                let mut claim = None;
+                                for (cand_handle, cand_socket) in sockets.iter() {
+                                    let cand_socket = match cand_socket {
+                                        smoltcp::socket::Socket::Tcp(cand_socket) => cand_socket,
+                                        _ => continue,
+                                    };
+                                    if !cand_socket.is_active()
+                                        || cand_socket.local_endpoint().map(|local| local.port) != Some(port)
+                                        || tcp_server_remote_close_poll.contains(&cand_handle)
+                                    {
+                                        continue;
+                                    }
+                                    if let Some(cand_fd) =
+                                        socket_table.iter().position(|entry| *entry == Some(cand_handle))
+                                    {
+                                        let cand_ep = cand_socket
+                                            .remote_endpoint()
+                                            .expect("TCP socket lacked remote endpoint");
+                                        claim = Some((cand_fd, cand_handle, cand_ep));
+                                        break;
+                                    }
+                                }
+                                match claim {
+                                    Some((cand_fd, cand_handle, cand_ep)) => {
+                                        tcp_server_remote_close_poll.push(cand_handle);
+                                        ep = cand_ep;
+                                        fd = cand_fd;
+                                        connection.take().unwrap().env
+                                    }
+                                    None => continue,
+                                }
                             }
                         }
                     };

@@ -632,6 +632,4 @@ pub const TESTS: &[TestEntry] = &[
     ("concur::cross_thread_move", cross_thread_move as fn()),
 ];
 
-/// Known-bug registry: the concurrent-accept probe is XFAIL(NTC-19) — aliased
-/// fds make concurrent accept() on clones of one listener unsupported.
-pub const XFAILS: &[XfailEntry] = &[("concur::listener_clone_accept_concurrent_probe", "NTC-19")];
+pub const XFAILS: &[XfailEntry] = &[];

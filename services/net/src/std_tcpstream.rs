@@ -57,7 +57,11 @@ pub(crate) fn std_tcp_connect(
         return;
     }
 
-    tcp_socket.set_timeout(timeout_ms.map(|t| Duration::from_millis(t.get())));
+    // smoltcp multiplies ms by 1000 in u64 and Instant + Duration reinterprets the µs total
+    // as i64, so a huge timeout (u64::MAX ms from connect_timeout(Duration::MAX)) wraps
+    // negative and aborts before the SYN. Clamp to keep the µs math in i64 range.
+    const MAX_TIMEOUT_MS: u64 = (i64::MAX / 2) as u64 / 1_000;
+    tcp_socket.set_timeout(timeout_ms.map(|t| Duration::from_millis(t.get().min(MAX_TIMEOUT_MS))));
 
     // Add the socket onto the list of sockets waiting to connect, since the connection will
     // take time.

@@ -161,6 +161,13 @@ pub(crate) fn std_tcp_rx(
         }
     };
 
+    // A zero-length read (`body.valid` is `None`) has nothing to wait for: succeed before
+    // the `can_recv()` gate so it can never park; the client decodes it as Ok(0).
+    if body.valid.is_none() {
+        body.offset = xous::MemoryAddress::new(1);
+        return;
+    }
+
     let socket = sockets.get_mut::<tcp::Socket>(*handle);
     if socket.can_recv() {
         log::debug!("receiving data right away");
@@ -226,6 +233,13 @@ pub(crate) fn std_tcp_peek(
             return;
         }
     };
+
+    // A zero-length peek (`body.valid` is `None`) has nothing to wait for: succeed before
+    // the `can_recv()` gate so it can never park; the client decodes it as Ok(0).
+    if body.valid.is_none() {
+        body.offset = xous::MemoryAddress::new(1);
+        return;
+    }
 
     let socket = sockets.get_mut::<tcp::Socket>(*handle);
     if socket.can_recv() {

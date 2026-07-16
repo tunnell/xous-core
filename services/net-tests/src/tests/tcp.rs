@@ -668,12 +668,11 @@ pub fn tcp_read_zero_len_buffer_pending() {
 }
 
 /// read(&mut []) with NO pending data must still return Ok(0) promptly.
-/// XFAIL: the server parks any read while can_recv() is false without checking
 /// the buffer length, so a zero-length read waits forever, services/net/src/std_tcpstream.rs.
 pub fn tcp_read_zero_len_buffer_quiet() {
     let (client, served, listener, _addr) = connected_pair();
-    // the peer must stay open and quiet through the read window, and the
-    // expected-failure path panics past this frame: park both in ManuallyDrop
+    // the peer must stay open and quiet through the read window, and a
+    // regression here panics past this frame: park both in ManuallyDrop
     // (leaked on panic, discarded on the happy path — NTC-5)
     let served = ManuallyDrop::new(served);
     let listener = ManuallyDrop::new(listener);
@@ -1057,6 +1056,5 @@ pub const XFAILS: &[XfailEntry] = &[
     ("tcp::tcp_write_after_peer_drop", "NTC-1"),
     ("tcp::tcp_half_close_server_replies_after_client_fin", "NTC-3"),
     ("tcp::tcp_half_close_server_fin_client_still_writes", "NTC-3"),
-    ("tcp::tcp_read_zero_len_buffer_quiet", "NTC-14"),
     ("tcp::tcp_write_zero_len", "NTC-7"),
 ];

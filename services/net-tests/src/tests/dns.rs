@@ -385,7 +385,6 @@ pub fn dns_a_rdlength_not_4() {
 /// A NOERROR response with zero answers must surface as a lookup error
 /// (getaddrinfo EAI_NODATA analog), never as a success carrying no addresses;
 /// the error kind is left unconstrained (platform-defined).
-/// XFAIL: dev encodes an empty resolve as SUCCESS entry_count=0 and caches it, so the lookup returns Ok([]), services/dns/src/main.rs:401-444.
 pub fn dns_zero_answers_is_error() {
     const NAME: &str = "t10.zero.test";
     let port = next_port();
@@ -440,7 +439,6 @@ pub fn dns_error_kind_via_std() {
 /// A response with a mismatched transaction id must not satisfy the query: the
 /// resolver keeps listening and returns the right-id answer. The worker sends a
 /// wrong-id decoy then the right-id answer; registered LAST (see the drain below).
-/// XFAIL: dev does a single recv per lookup, so an id mismatch errors immediately, services/dns/src/main.rs:351-367.
 pub fn dns_wrong_txn_id_ignored() {
     const NAME: &str = "t9.id.test";
     const DECOY_IP: [u8; 4] = [192, 0, 2, 66];
@@ -472,6 +470,37 @@ pub fn dns_wrong_txn_id_ignored() {
     assert_resolves_to(result, &[REAL_IP], port);
 }
 
+/// A SERVFAIL (rcode 2) response surfaces as ServerFailure through the native
+/// `dns::Dns` API; the std path funnels every DNS failure to InvalidInput, so
+/// only the native API can distinguish the rcode.
+pub fn dns_servfail_code_via_native() {
+    const NAME: &str = "t12.sf.test";
+    let resolver = fake_resolver(move |id| {
+        // SERVFAIL shape: QR|RD|RA with rcode=2, zero answers, question echoed.
+        let mut dgram = header_with_flags(id, 0x8182, 0);
+        dgram.extend_from_slice(&question(NAME));
+        vec![dgram]
+    });
+    let result = bounded("native lookup of a SERVFAIL-answered name", 20, move || {
+        let xns = xous_names::XousNames::new().expect("connect to xous-names");
+        let client = dns::Dns::new(&xns).expect("connect to the dns service");
+        let result = client.lookup(NAME);
+        // The kernel dedupes per-(process, server) connections, so dropping the
+        // last native client would sever the CID libstd caches for std lookups.
+        std::mem::forget(client);
+        result
+    });
+    reap(resolver);
+    match result {
+        Ok(addr) => panic!("SERVFAIL-answered lookup unexpectedly resolved to {:?}", IpAddr::from(addr)),
+        Err(code) => assert!(
+            matches!(code, dns::DnsResponseCode::ServerFailure),
+            "SERVFAIL must surface as ServerFailure through the native API, got {:?}",
+            code
+        ),
+    }
+}
+
 /// This theme's registry (aggregated by tests::all_tests / all_xfails).
 /// Ordering is load-bearing: the resolver-free canaries come first, then the
 /// positive-control rig test, and dns_wrong_txn_id_ignored stays LAST;
@@ -486,8 +515,8 @@ pub const TESTS: &[TestEntry] = &[
     ("dns::dns_a_rdlength_not_4", dns_a_rdlength_not_4 as fn()),
     ("dns::dns_zero_answers_is_error", dns_zero_answers_is_error as fn()),
     ("dns::dns_error_kind_via_std", dns_error_kind_via_std as fn()),
+    ("dns::dns_servfail_code_via_native", dns_servfail_code_via_native as fn()),
     ("dns::dns_wrong_txn_id_ignored", dns_wrong_txn_id_ignored as fn()),
 ];
 
-pub const XFAILS: &[XfailEntry] =
-    &[("dns::dns_zero_answers_is_error", "NTC-17"), ("dns::dns_wrong_txn_id_ignored", "NTC-18")];
+pub const XFAILS: &[XfailEntry] = &[];

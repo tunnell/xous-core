@@ -8,7 +8,7 @@ use std::convert::TryInto;
 use std::io::ErrorKind;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, UdpSocket};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use api::*;
 use net::NetIpAddr;
@@ -286,7 +286,10 @@ impl Message {
     */
 
     pub fn rcode(&self) -> DnsResponseCode {
-        match (self.header() >> 11) & 0xF {
+        // RCODE is the low nibble of the flags word (RFC 1035 §4.1.1). Bits
+        // 11-14 are OPCODE, which is 0 in responses to our standard queries,
+        // so extracting there misreads every error rcode as NoError.
+        match self.header() & 0xF {
             0 => DnsResponseCode::NoError,
             1 => DnsResponseCode::FormatError,
             2 => DnsResponseCode::ServerFailure,
@@ -297,6 +300,11 @@ impl Message {
         }
     }
 }
+
+/// Overall time budget for a single resolve(): one query sent, then however
+/// many receive attempts it takes for a datagram to match the query (a
+/// mismatched transaction id re-listens with the remaining budget).
+const DNS_QUERY_TIMEOUT: Duration = Duration::from_millis(10_000);
 
 pub struct Resolver {
     /// DnsServerManager is a service of the Net crate that automatically updates the DNS server list
@@ -316,8 +324,7 @@ impl Resolver {
         #[cfg(not(target_os = "windows"))]
         let socket = UdpSocket::bind(format!("0.0.0.0:{}", local_port))
             .expect("couldn't create socket for DNS resolver");
-        let timeout = Duration::from_millis(10_000); // 10 seconds for DNS to resolve by default
-        socket.set_read_timeout(Some(timeout)).unwrap();
+        socket.set_read_timeout(Some(DNS_QUERY_TIMEOUT)).unwrap();
         socket.set_nonblocking(false).unwrap(); // we want this to block.
         // we /could/ do a non-blocking DNS resolver, but...what would you do in the meantime??
         // blocking is probably what we actually want this time.
@@ -360,22 +367,41 @@ impl Resolver {
 
             self.socket.send_to(&query.datagram, &server).map_err(|_| DnsResponseCode::NetworkError)?;
 
-            match self.socket.recv(&mut self.buf) {
-                Ok(len) => {
-                    let message = Message::from(&self.buf[..len]);
-                    if message.id() == query.id() && message.is_response() {
-                        return match message.rcode() {
-                            DnsResponseCode::NoError => message.parse_response(),
-                            rcode => Err(rcode),
+            // Listen until the query deadline: a datagram failing the transaction-id/
+            // response-bit check is ignored and the socket re-armed with the remaining
+            // budget (RFC 5452 §4.3) — stale or spoofed answers must not fail this query.
+            let deadline = Instant::now() + DNS_QUERY_TIMEOUT;
+            loop {
+                let remaining = match deadline.checked_duration_since(Instant::now()) {
+                    // set_read_timeout rejects Some(0) and libstd tracks timeouts in whole ms,
+                    // so a sub-ms remainder would truncate to "no timeout" and block without
+                    // bound; a spent budget is a timeout either way.
+                    Some(remaining) if remaining >= Duration::from_millis(1) => remaining,
+                    _ => return Err(DnsResponseCode::NetworkError),
+                };
+                self.socket.set_read_timeout(Some(remaining)).map_err(|_| DnsResponseCode::UnknownError)?;
+                match self.socket.recv(&mut self.buf) {
+                    Ok(len) => {
+                        let message = Message::from(&self.buf[..len]);
+                        if message.id() == query.id() && message.is_response() {
+                            return match message.rcode() {
+                                // NOERROR with no usable address records must be NameError (EAI_NODATA),
+                                // not an empty success: an empty map would be cached as a zero-entry
+                                // SUCCESS, and a later cache hit indexes rand % 0 and panics the service.
+                                DnsResponseCode::NoError => message.parse_response().and_then(|map| {
+                                    if map.is_empty() { Err(DnsResponseCode::NameError) } else { Ok(map) }
+                                }),
+                                rcode => Err(rcode),
+                            };
+                        }
+                    }
+                    Err(e) => {
+                        return match e.kind() {
+                            ErrorKind::WouldBlock | ErrorKind::TimedOut => Err(DnsResponseCode::NetworkError),
+                            _ => Err(DnsResponseCode::UnknownError),
                         };
-                    } else {
-                        Err(DnsResponseCode::NetworkError)
                     }
                 }
-                Err(e) => match e.kind() {
-                    ErrorKind::WouldBlock => Err(DnsResponseCode::NetworkError),
-                    _ => Err(DnsResponseCode::UnknownError),
-                },
             }
         } else {
             Err(DnsResponseCode::NoServerSpecified)

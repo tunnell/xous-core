@@ -425,11 +425,9 @@ pub fn tcp_plain_connect_blackhole_parks() {
     }
 }
 
-/// DANGER — disabled, NOT registered: asserts a connect timeout must affect
-/// only the connect, not linger as a session timeout. Disabled because the
-/// reproducer WEDGES rather than failing cleanly (the aborted connection's tx
-/// waiter never completes, NTC-1), and the runner counts any wedge as a hard fail.
-#[allow(dead_code)]
+/// A connect timeout affects only the connect: after the handshake the server
+/// clears the socket timeout, so a later peer stall past the connect timeout
+/// does not abort the established connection.
 pub fn connect_timeout_not_a_session_timeout() {
     let port = next_port();
     let addr = SocketAddr::new(LOOPBACK, port);
@@ -544,8 +542,7 @@ pub const TESTS: &[TestEntry] = &[
     ("timeouts::timeout_get_set_roundtrip", timeout_get_set_roundtrip as fn()),
     ("timeouts::timeout_zero_duration_invalid_input", timeout_zero_duration_invalid_input as fn()),
     ("timeouts::timeout_submillisecond_getter_none", timeout_submillisecond_getter_none as fn()),
-    // connect_timeout_not_a_session_timeout (NTC-20) is DISABLED, not
-    // registered — it wedges rather than failing cleanly (see its doc comment).
+    ("timeouts::connect_timeout_not_a_session_timeout", connect_timeout_not_a_session_timeout as fn()),
     // The two blackhole tests below leak SynSent sockets, so
     // tcp_connect_after_blackhole_still_works stays the FINAL entry as a guard.
     ("timeouts::tcp_connect_timeout_fires", tcp_connect_timeout_fires as fn()),

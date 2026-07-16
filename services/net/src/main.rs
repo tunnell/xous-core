@@ -1431,7 +1431,7 @@ fn main() -> ! {
                 // log::trace!("pump: tcpconnect");
                 for connection in tcp_connect_waiting.iter_mut() {
                     let socket;
-                    let (env, _handle, fd, local_port, remote_port) = {
+                    let (env, handle, fd, local_port, remote_port) = {
                         // If the connection is blank, or if it's still waiting to get
                         // connected, don't do anything.
                         match connection {
@@ -1451,6 +1451,10 @@ fn main() -> ! {
 
                     log::debug!("tcp state is {:?}", socket.state());
                     if socket.state() == smoltcp::socket::tcp::State::Established {
+                        // Std's connect_timeout applies only to the connect itself, but it is
+                        // installed as a smoltcp socket-lifetime timeout; clear it now or smoltcp
+                        // aborts the established session on a later peer stall.
+                        sockets.get_mut::<tcp::Socket>(handle).set_timeout(None);
                         respond_with_connected(env, fd, local_port, remote_port);
                     } else {
                         respond_with_error(env, NetError::TimedOut);

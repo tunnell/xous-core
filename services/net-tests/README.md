@@ -14,9 +14,9 @@ stack), so no external network is involved.
 IPv4 config, then runs every registered test under `catch_unwind` and prints one
 machine-parsable line per test on the log console
 (`TEST <name> PASS|FAIL|XFAIL|XPASS`), ending with a `NET-TESTS DONE: ...`
-summary and `CI done`. A Renode-side driver watches those lines. The suite is 99
-tests across eight themes (`smoke` 12, `tcp` 25, `udp` 14, `errors` 9,
-`sockopts` 8, `dns` 10, `concur` 10, `timeouts` 11); many are ported/adapted
+summary and `CI done`. A Renode-side driver watches those lines. The suite is
+101 tests across eight themes (`smoke` 12, `tcp` 25, `udp` 14, `errors` 9,
+`sockopts` 10, `dns` 10, `concur` 10, `timeouts` 11); many are ported/adapted
 from rust's own `library/std/src/net/{tcp,udp}/tests.rs`, the rest cover
 xous-specific ground: the small socket buffers and the 1530-byte MTU boundary,
 the loopback path, error-kind decoding, DNS response parsing (against an
@@ -75,12 +75,12 @@ some behaviors are a property of the `(rustc, xous-core)` pair, so the workflow
 pins both; each XFAIL's doc comment records the mechanism and suspected code
 path (grep the theme files under `src/tests/` for `XFAIL`).
 
-A few reproducers ship **disabled** (`#[allow(dead_code)]`, not registered)
-because they crash or wedge the `net` service, which would hang the rest of the
-run: binding/connecting an IPv6 address panics smoltcp on the v4-only interface,
-and a connect timeout that lingers as a session timeout aborts an established
-connection whose parked writer is then never woken. Their doc comments explain
-how to reproduce them by hand.
+A few reproducers still ship **disabled** (`#[allow(dead_code)]`, not
+registered) because they crash or wedge the `net` or `dns` service, which
+would hang the rest of the run; their doc comments explain the mechanisms and
+how to reproduce them by hand. (The IPv6 bind/connect reproducers, which used
+to panic smoltcp on the v4-only interface, are fixed and registered as
+regression pins in `sockopts`.)
 
 ## Adding a test
 

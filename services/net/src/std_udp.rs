@@ -35,6 +35,14 @@ pub(crate) fn std_udp_bind(
         }
     };
 
+    // The interface is IPv4-only: a v6 bind is unreachable at best, and a later egress panics
+    // smoltcp's IPv6 source-address selection at worst. Reject other families up front,
+    // mirroring the v4-only address check in std_tcp_listen.
+    if !matches!(address, IpAddress::Ipv4(_)) {
+        std_failure(msg, NetError::Invalid);
+        return;
+    }
+
     let udp_rx_buffer =
         udp::PacketBuffer::new(vec![udp::PacketMetadata::EMPTY, udp::PacketMetadata::EMPTY], vec![0; 65535]);
     let udp_tx_buffer =
@@ -214,6 +222,13 @@ pub(crate) fn std_udp_tx(
             return;
         }
     };
+    // The interface is IPv4-only: smoltcp's `send_slice` accepts a v6 destination unchecked, and
+    // the next dispatch panics on the IP version mismatch against the v4-bound local address.
+    // Reject other families before anything is queued.
+    if !matches!(address, IpAddress::Ipv4(_)) {
+        std_failure(msg, NetError::Unaddressable);
+        return;
+    }
     let len = u16::from_le_bytes([bytes[19], bytes[20]]);
     // attempt the tx
     log::debug!(

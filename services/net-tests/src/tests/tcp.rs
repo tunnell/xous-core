@@ -691,7 +691,6 @@ pub fn tcp_read_zero_len_buffer_quiet() {
 
 /// write(&[]) returns Ok(0), the peer receives NOTHING, and a following 1-byte
 /// marker arrives alone and first.
-/// XFAIL: on valid=0 the server falls back to length=data.len() and send_slice injects up to 1530 garbage bytes, services/net/src/std_tcpstream.rs.
 pub fn tcp_write_zero_len() {
     let (client, served, listener, _addr) = connected_pair();
     let mut served = ManuallyDrop::new(served);
@@ -1056,5 +1055,4 @@ pub const XFAILS: &[XfailEntry] = &[
     ("tcp::tcp_write_after_peer_drop", "NTC-1"),
     ("tcp::tcp_half_close_server_replies_after_client_fin", "NTC-3"),
     ("tcp::tcp_half_close_server_fin_client_still_writes", "NTC-3"),
-    ("tcp::tcp_write_zero_len", "NTC-7"),
 ];

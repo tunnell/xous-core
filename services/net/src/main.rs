@@ -1560,10 +1560,11 @@ fn main() -> ! {
                     // Perform the transfer
                     let sent_octets = {
                         let data = unsafe { body.buf.as_slice::<u8>() };
+                        // `valid` is None for a zero-length write; send nothing, not the whole lent page.
                         let length = body
                             .valid
                             .map(|v| if v.get() > data.len() { data.len() } else { v.get() })
-                            .unwrap_or_else(|| data.len());
+                            .unwrap_or(0);
 
                         match socket.send_slice(&data[..length]) {
                             Ok(octets) => octets,

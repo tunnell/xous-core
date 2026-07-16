@@ -90,13 +90,21 @@ impl Message {
         use DnsResponseCode::FormatError;
         let mut index = start;
         loop {
-            log::trace!("cname index: {}", index);
-            if *(self.datagram.get(index).ok_or(FormatError)?) == 0 {
+            let b = *(self.datagram.get(index).ok_or(FormatError)?);
+            log::trace!("name walk index: {} byte: {:#x}", index, b);
+            if b >= 0xc0 {
+                // Compressed pointer per RFC 1035 §4.1.4. 2 bytes total
+                // and terminates the name. We don't follow the pointer;
+                // we only need to skip past it.
+                index += 2;
+                break;
+            } else if b == 0 {
+                // Root null label terminates the name.
                 index += 1;
                 break;
             } else {
-                index += *(self.datagram.get(index).ok_or(FormatError)?) as usize;
-                index += 1;
+                // Label of length b: skip the length byte plus b bytes.
+                index += 1 + (b as usize);
             }
         }
         Ok(index)
@@ -136,27 +144,33 @@ impl Message {
         // index is now at the aname section
         for aname in 0..ancount {
             log::trace!("parsing aname{}, index {}", aname, index);
-            // first check to see if we're dealing with a pointer or a name
-            if self.datagram[index] >= 0xc0 {
-                // pointer
-                index += 1;
-                if self.datagram[index] != 0xc {
-                    log::error!("Found aname pointer, but value does not conform to length of aname header");
+            // Skip the answer record's name. It can be a fully-encoded
+            // name, a compressed pointer (2 bytes), or a label-then-
+            // pointer hybrid; fast_foward_name handles all three. We
+            // don't need to dereference the name — we only need to
+            // advance the parse cursor past it.
+            if self.datagram.get(index).copied().ok_or(FormatError)? >= 0xc0 {
+                // Compressed pointer — 2 bytes total per RFC 1035 §4.1.4.
+                if index + 2 > self.datagram.len() {
+                    log::error!("aname pointer extends past end of datagram");
                     return Err(FormatError);
                 }
-                index += 1;
+                index += 2;
             } else {
-                // name, fast forward past the name
                 index = self.fast_foward_name(index)?;
                 log::trace!("fast forward aname to {}", index);
             }
-            // index is now at type
-            let atype = u16::from_be_bytes(self.datagram[index..index + 2].try_into().unwrap());
-            // A = 1, AAAA = 28
-            if atype != 1 && atype != 28 {
-                log::error!("Problem parsing aname, type is not 1 or 28: {}", atype);
+            // index is now at type. A = 1, AAAA = 28, CNAME = 5, etc.
+            // Per RFC 1035 §4.1.3, every RR has type, class, ttl, and
+            // rdlength fields in a uniform layout. We parse those for
+            // every record regardless of type, then dispatch on the
+            // type to decide whether to extract an IP or skip the
+            // record's RDATA.
+            if index + 2 + 2 + 4 + 2 > self.datagram.len() {
+                log::error!("RR header extends past end of datagram");
                 return Err(FormatError);
             }
+            let atype = u16::from_be_bytes(self.datagram[index..index + 2].try_into().unwrap());
             index += 2;
             let aclass = u16::from_be_bytes(self.datagram[index..index + 2].try_into().unwrap());
             if aclass != 1 {
@@ -164,49 +178,47 @@ impl Message {
                 return Err(FormatError);
             }
             index += 2;
-            // this is our TTL
             let ttl = u32::from_be_bytes(self.datagram[index..index + 4].try_into().unwrap());
             log::trace!("got ttl: {}", ttl);
             index += 4;
-            // this is the payload length
-            let addr_len = u16::from_be_bytes(self.datagram[index..index + 2].try_into().unwrap());
+            let rdlength = u16::from_be_bytes(self.datagram[index..index + 2].try_into().unwrap()) as usize;
             index += 2;
-            match addr_len {
-                // ipv4
-                4 => {
-                    if atype != 1 {
-                        log::error!("Got a 4-byte address, but ATYPE != A (1)");
-                        return Err(FormatError);
-                    }
-                    // this copy happens because I can't figure out how to get Ipv4Addr::from() to realize
-                    // it's casting from a [u8;4]
-                    let mut rdata: [u8; 4] = [0; 4];
-                    for (&src, dst) in self.datagram[index..index + 4].iter().zip(rdata.iter_mut()) {
-                        *dst = src;
-                    }
+            if index + rdlength > self.datagram.len() {
+                log::error!("rdata extends past end of datagram");
+                return Err(FormatError);
+            }
+            match (atype, rdlength) {
+                // ipv4 — A record
+                (1, 4) => {
+                    let rdata: [u8; 4] =
+                        self.datagram[index..index + 4].try_into().map_err(|_| FormatError)?;
                     let addr = IpAddr::V4(Ipv4Addr::from(rdata));
                     index += 4;
                     map.insert(addr, ttl);
                 }
-                // ipv6
-                16 => {
-                    if atype != 28 {
-                        log::error!("Got a 16-byte address, but ATYPE != AAAA (28)");
-                        return Err(FormatError);
-                    }
-                    // this copy happens because I can't figure out how to get Ipv6Addr::from() to realize
-                    // it's casting from a [u8;4]
-                    let mut rdata: [u8; 16] = [0; 16];
-                    for (&src, dst) in self.datagram[index..index + 16].iter().zip(rdata.iter_mut()) {
-                        *dst = src;
-                    }
+                // ipv6 — AAAA record
+                (28, 16) => {
+                    let rdata: [u8; 16] =
+                        self.datagram[index..index + 16].try_into().map_err(|_| FormatError)?;
                     let addr = IpAddr::V6(Ipv6Addr::from(rdata));
                     index += 16;
                     map.insert(addr, ttl);
                 }
-                _ => {
-                    log::error!("Length field does not match a known record type");
+                // Length-mismatched A or AAAA — reject.
+                (1, _) | (28, _) => {
+                    log::error!("Length-mismatched address record: atype={} rdlength={}", atype, rdlength);
                     return Err(FormatError);
+                }
+                // Any other type (CNAME=5, DNAME=39, NS=2, etc.) —
+                // skip the RDATA via rdlength and continue. No entry
+                // is added to the IP map; the caller is asking for
+                // host-to-IP resolution and the resolver chases CNAME
+                // chains server-side, so the answer section's A/AAAA
+                // records carry the resolved IPs even when the section
+                // also includes intermediate CNAME records.
+                _ => {
+                    log::trace!("skipping non-A/AAAA record type={} rdlength={}", atype, rdlength);
+                    index += rdlength;
                 }
             }
         }
@@ -657,4 +669,232 @@ fn main() -> ! {
     xous::destroy_server(dns_sid).unwrap();
     log::trace!("quitting");
     xous::terminate_process(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::net::{IpAddr, Ipv4Addr};
+
+    use super::*;
+
+    /// Build a wire-format DNS response header.
+    /// id: 2 bytes
+    /// flags: 0x8180 (QR=1, RD=1, RA=1, RCODE=0)
+    /// qdcount, ancount, nscount=0, arcount=0
+    fn header(id: u16, ancount: u16) -> Vec<u8> {
+        let mut h = Vec::new();
+        h.extend_from_slice(&id.to_be_bytes());
+        h.extend_from_slice(&0x8180u16.to_be_bytes()); // standard response flags
+        h.extend_from_slice(&1u16.to_be_bytes()); // qdcount
+        h.extend_from_slice(&ancount.to_be_bytes());
+        h.extend_from_slice(&0u16.to_be_bytes()); // nscount
+        h.extend_from_slice(&0u16.to_be_bytes()); // arcount
+        h
+    }
+
+    /// Encode a domain name as DNS wire labels terminated by a null byte.
+    fn encode_name(name: &str) -> Vec<u8> {
+        let mut buf = Vec::new();
+        for label in name.split('.') {
+            buf.push(label.len() as u8);
+            buf.extend_from_slice(label.as_bytes());
+        }
+        buf.push(0);
+        buf
+    }
+
+    /// Build the question section: name + qtype + qclass.
+    fn question(name: &str) -> Vec<u8> {
+        let mut q = encode_name(name);
+        q.extend_from_slice(&1u16.to_be_bytes()); // qtype = A
+        q.extend_from_slice(&1u16.to_be_bytes()); // qclass = IN
+        q
+    }
+
+    /// An A record with a compressed-pointer name.
+    /// `name_offset` is the absolute offset in the datagram of the name to
+    /// point to (typically 12 for the qname, but can be any valid offset).
+    fn a_record(name_offset: u16, ttl: u32, ip: [u8; 4]) -> Vec<u8> {
+        let mut rr = Vec::new();
+        // Compressed pointer: high 2 bits = 11, remaining 14 bits = offset
+        let ptr = 0xc000 | (name_offset & 0x3fff);
+        rr.extend_from_slice(&ptr.to_be_bytes());
+        rr.extend_from_slice(&1u16.to_be_bytes()); // type A
+        rr.extend_from_slice(&1u16.to_be_bytes()); // class IN
+        rr.extend_from_slice(&ttl.to_be_bytes());
+        rr.extend_from_slice(&4u16.to_be_bytes()); // rdlength
+        rr.extend_from_slice(&ip);
+        rr
+    }
+
+    /// A CNAME record with a compressed-pointer name and an inline canonical
+    /// name (no further compression in the RDATA, for test simplicity).
+    fn cname_record(name_offset: u16, ttl: u32, canonical: &str) -> Vec<u8> {
+        let mut rr = Vec::new();
+        let ptr = 0xc000 | (name_offset & 0x3fff);
+        rr.extend_from_slice(&ptr.to_be_bytes());
+        rr.extend_from_slice(&5u16.to_be_bytes()); // type CNAME
+        rr.extend_from_slice(&1u16.to_be_bytes()); // class IN
+        rr.extend_from_slice(&ttl.to_be_bytes());
+        let rdata = encode_name(canonical);
+        rr.extend_from_slice(&(rdata.len() as u16).to_be_bytes());
+        rr.extend_from_slice(&rdata);
+        rr
+    }
+
+    /// An NS record (type 2) — exercises "skip unknown type via rdlength".
+    fn ns_record(name_offset: u16, ttl: u32, ns_name: &str) -> Vec<u8> {
+        let mut rr = Vec::new();
+        let ptr = 0xc000 | (name_offset & 0x3fff);
+        rr.extend_from_slice(&ptr.to_be_bytes());
+        rr.extend_from_slice(&2u16.to_be_bytes()); // type NS
+        rr.extend_from_slice(&1u16.to_be_bytes()); // class IN
+        rr.extend_from_slice(&ttl.to_be_bytes());
+        let rdata = encode_name(ns_name);
+        rr.extend_from_slice(&(rdata.len() as u16).to_be_bytes());
+        rr.extend_from_slice(&rdata);
+        rr
+    }
+
+    /// google.com-shape regression test:
+    /// 6 A records, all compressed back to the qname at offset 12.
+    /// Pre-fix this case worked; this test pins the behavior.
+    #[test]
+    fn parses_direct_a_record_response() {
+        let mut datagram = header(0x1234, 6);
+        datagram.extend_from_slice(&question("google.com"));
+        let ips: [[u8; 4]; 6] = [
+            [142, 251, 116, 100],
+            [142, 251, 116, 101],
+            [142, 251, 116, 113],
+            [142, 251, 116, 138],
+            [142, 251, 116, 139],
+            [142, 251, 116, 102],
+        ];
+        for ip in &ips {
+            datagram.extend_from_slice(&a_record(12, 255, *ip));
+        }
+
+        let msg = Message::from(&datagram);
+        let map = msg.parse_response().expect("parse should succeed");
+        assert_eq!(map.len(), 6, "expected 6 A records, got {}", map.len());
+        for ip in &ips {
+            let addr = IpAddr::V4(Ipv4Addr::from(*ip));
+            assert!(map.contains_key(&addr), "missing {:?}", addr);
+            assert_eq!(map[&addr], 255);
+        }
+    }
+
+    /// CNAME-chain answer-shape test (the bug fix):
+    /// 1 CNAME + 2 A records, with the A records' names pointing into the
+    /// CNAME's RDATA (a non-qname offset). Pre-fix this returned FormatError
+    /// at the first non-A/AAAA record. Post-fix the CNAME is skipped and
+    /// the two A records contribute to the IP map.
+    #[test]
+    fn parses_cname_chain_with_mid_message_compression() {
+        let mut datagram = header(0x5678, 3);
+        datagram.extend_from_slice(&question("x.io"));
+
+        // The canonical name's storage offset within the upcoming CNAME
+        // record's RDATA. The CNAME header occupies:
+        //   2 (pointer) + 2 (type) + 2 (class) + 4 (ttl) + 2 (rdlength) = 12
+        // bytes after the start of the answer section. The answer section
+        // starts at offset (12 header + question_len). question("x.io"):
+        //   1 + 1 + 1 + 2 + 1 + 4 = 10 bytes.
+        // So answer section starts at offset 22; the CNAME's RDATA starts
+        // at offset 22 + 12 = 34. That's where the canonical name lives.
+        let canonical_name_offset: u16 = 34;
+
+        datagram.extend_from_slice(&cname_record(12, 296, "y.io"));
+        datagram.extend_from_slice(&a_record(canonical_name_offset, 296, [13, 248, 212, 111]));
+        datagram.extend_from_slice(&a_record(canonical_name_offset, 296, [76, 223, 92, 165]));
+
+        let msg = Message::from(&datagram);
+        let map = msg.parse_response().expect("parse should succeed");
+        assert_eq!(map.len(), 2, "expected 2 A records, got {}", map.len());
+        assert!(map.contains_key(&IpAddr::V4(Ipv4Addr::new(13, 248, 212, 111))));
+        assert!(map.contains_key(&IpAddr::V4(Ipv4Addr::new(76, 223, 92, 165))));
+    }
+
+    /// Truncated response — answer record extends past datagram end.
+    /// Must return FormatError; the parser must not panic on the slice.
+    #[test]
+    fn rejects_truncated_response() {
+        let mut datagram = header(0xaaaa, 1);
+        datagram.extend_from_slice(&question("x.io"));
+        // Start an A record but truncate before the rdata is complete.
+        datagram.push(0xc0);
+        datagram.push(0x0c);
+        datagram.extend_from_slice(&1u16.to_be_bytes()); // type A
+        datagram.extend_from_slice(&1u16.to_be_bytes()); // class IN
+        datagram.extend_from_slice(&60u32.to_be_bytes()); // ttl
+        datagram.extend_from_slice(&4u16.to_be_bytes()); // rdlength = 4
+        datagram.extend_from_slice(&[1, 2]); // only 2 bytes of rdata, not 4
+
+        let msg = Message::from(&datagram);
+        let result = msg.parse_response();
+        assert!(
+            matches!(result, Err(DnsResponseCode::FormatError)),
+            "expected FormatError on truncated response, got {:?}",
+            result
+        );
+    }
+
+    /// Unknown record type (NS = 2) is skipped via rdlength without
+    /// corrupting the parser's index. The A record after it must still
+    /// be extracted correctly.
+    #[test]
+    fn skips_unknown_record_types() {
+        let mut datagram = header(0xbbbb, 2);
+        datagram.extend_from_slice(&question("x.io"));
+        datagram.extend_from_slice(&ns_record(12, 60, "ns1.example.com"));
+        datagram.extend_from_slice(&a_record(12, 60, [9, 9, 9, 9]));
+
+        let msg = Message::from(&datagram);
+        let map = msg.parse_response().expect("parse should succeed");
+        assert_eq!(map.len(), 1, "NS record must be skipped");
+        assert!(map.contains_key(&IpAddr::V4(Ipv4Addr::new(9, 9, 9, 9))));
+    }
+
+    /// Length-mismatched A record (rdlength != 4) is rejected. This is a
+    /// behavior tightening from before the fix; previously the parser
+    /// would error via the `match addr_len` arm but with the same
+    /// FormatError outcome.
+    #[test]
+    fn rejects_length_mismatched_a_record() {
+        let mut datagram = header(0xcccc, 1);
+        datagram.extend_from_slice(&question("x.io"));
+        datagram.push(0xc0);
+        datagram.push(0x0c);
+        datagram.extend_from_slice(&1u16.to_be_bytes()); // type A
+        datagram.extend_from_slice(&1u16.to_be_bytes()); // class IN
+        datagram.extend_from_slice(&60u32.to_be_bytes()); // ttl
+        datagram.extend_from_slice(&8u16.to_be_bytes()); // rdlength = 8 (wrong)
+        datagram.extend_from_slice(&[1, 2, 3, 4, 5, 6, 7, 8]);
+
+        let msg = Message::from(&datagram);
+        let result = msg.parse_response();
+        assert!(
+            matches!(result, Err(DnsResponseCode::FormatError)),
+            "expected FormatError on length-mismatched A, got {:?}",
+            result
+        );
+    }
+
+    /// Bad qclass in the question section is still rejected.
+    #[test]
+    fn rejects_bad_qclass() {
+        let mut datagram = header(0xdddd, 0);
+        datagram.extend_from_slice(&encode_name("x.io"));
+        datagram.extend_from_slice(&1u16.to_be_bytes()); // qtype = A
+        datagram.extend_from_slice(&99u16.to_be_bytes()); // qclass = bogus
+
+        let msg = Message::from(&datagram);
+        let result = msg.parse_response();
+        assert!(
+            matches!(result, Err(DnsResponseCode::FormatError)),
+            "expected FormatError on bad qclass, got {:?}",
+            result
+        );
+    }
 }

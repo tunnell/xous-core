@@ -45,7 +45,6 @@ fn tcp_echo_roundtrip(ip: IpAddr) {
 
 /// A dropped (closed) TcpStream must deliver EOF to its peer: the echo
 /// server's blocking read returns Ok(0) and the thread exits.
-/// XFAIL: a reader parked in tcp_rx_waiting is never completed with EOF across CloseWait, services/net/src/main.rs NetPump.
 pub fn tcp_drop_close_delivers_eof() {
     let port = next_port();
     let addr = SocketAddr::new(LOOPBACK, port);
@@ -136,7 +135,6 @@ pub fn tcp_connect_refused() {
 }
 
 /// shutdown(Write) must deliver EOF to the peer: its read returns Ok(0).
-/// XFAIL: StdTcpStreamShutdown never calls socket.close(), so no FIN is
 /// emitted and the peer never sees EOF, services/net/src/main.rs.
 pub fn tcp_shutdown_write() {
     let port = next_port();
@@ -379,8 +377,6 @@ pub const TESTS: &[(&str, fn())] = &[
 ];
 
 pub const XFAILS: &[(&str, &str)] = &[
-    ("smoke::tcp_drop_close_delivers_eof", "NTC-3"),
     ("smoke::tcp_connect_refused", "NTC-6"),
-    ("smoke::tcp_shutdown_write", "NTC-4"),
     ("smoke::udp_send_recv_loopback", "NTC-2"),
 ];

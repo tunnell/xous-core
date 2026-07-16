@@ -919,8 +919,10 @@ fn main() -> ! {
                             log::info!("TcpShutdown: aborting rx waiting handle: {:?}", handle);
                             match msg.body.memory_message_mut() {
                                 Some(body) => {
-                                    // u32::MAX indicates a zero-length receive
-                                    body.valid = xous::MemorySize::new(u32::MAX as usize);
+                                    // Complete the parked read with EOF: valid=None plus a nonzero
+                                    // offset decodes client-side as Ok(0), matching the rx reaper.
+                                    body.valid = None;
+                                    body.offset = xous::MemoryAddress::new(1);
                                 }
                                 None => {
                                     respond_with_error(msg, NetError::LibraryError);
@@ -945,8 +947,10 @@ fn main() -> ! {
                             log::info!("TcpShutdown: aborting peek waiting handle: {:?}", handle);
                             match msg.body.memory_message_mut() {
                                 Some(body) => {
-                                    // u32::MAX indicates a zero-length receive
-                                    body.valid = xous::MemorySize::new(u32::MAX as usize);
+                                    // Complete the parked peek with EOF: valid=None plus a nonzero
+                                    // offset decodes client-side as Ok(0), matching the peek reaper.
+                                    body.valid = None;
+                                    body.offset = xous::MemoryAddress::new(1);
                                 }
                                 None => {
                                     respond_with_error(msg, NetError::LibraryError);
@@ -989,6 +993,9 @@ fn main() -> ! {
                             // unique, so we can abort the search.
                             break;
                         }
+                        // smoltcp's close() shuts down only the tx side (rx stays usable,
+                        // matching shutdown(Write)); queued tx data drains before the FIN.
+                        sockets.get_mut::<tcp::Socket>(*connection).close();
                     }
                 }
 

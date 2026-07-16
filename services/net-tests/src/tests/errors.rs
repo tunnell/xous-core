@@ -242,7 +242,6 @@ pub fn tcp_nonblocking_write_wouldblock() {
 }
 
 /// A write() after our own shutdown(Write) must fail; it succeeds instead.
-/// XFAIL: the shutdown handler aborts only already-parked messages and never
 /// closes the smoltcp socket, so a later StdTcpTx is accepted, services/net/src/main.rs.
 pub fn tcp_write_after_shutdown_write_errs() {
     let addr = SocketAddr::new(LOOPBACK, next_port());
@@ -274,7 +273,6 @@ pub fn tcp_write_after_shutdown_write_errs() {
 
 /// shutdown(Read) through a clone wakes a read blocked on the same socket and
 /// makes it return Ok(0) (EOF); the woken read returns Err(Other) instead.
-/// XFAIL: the wake sets body.valid but never body.offset, so the rx decode takes the error path, services/net/src/main.rs.
 pub fn tcp_shutdown_read_wakes_blocked_read() {
     let addr = SocketAddr::new(LOOPBACK, next_port());
     let listener = check!(TcpListener::bind(addr));
@@ -361,8 +359,4 @@ pub const TESTS: &[TestEntry] = &[
     ("errors::take_error_none", take_error_none as fn()),
 ];
 
-pub const XFAILS: &[XfailEntry] = &[
-    ("errors::tcp_nonblocking_write_wouldblock", "NTC-10"),
-    ("errors::tcp_write_after_shutdown_write_errs", "NTC-4"),
-    ("errors::tcp_shutdown_read_wakes_blocked_read", "NTC-11"),
-];
+pub const XFAILS: &[XfailEntry] = &[("errors::tcp_nonblocking_write_wouldblock", "NTC-10")];

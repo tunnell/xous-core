@@ -92,6 +92,13 @@ pub(crate) fn std_tcp_tx(
     };
 
     let socket = sockets.get_mut::<tcp::Socket>(*handle);
+    // A closed tx half can never become writable again, so fail now instead
+    // of parking forever; handshake states still park (accept can hand out an
+    // fd at SYN-RECEIVED). TimedOut is the tx reaper's closed-socket code.
+    if !socket.may_send() && !matches!(socket.state(), tcp::State::SynSent | tcp::State::SynReceived) {
+        respond_with_error(msg, NetError::TimedOut);
+        return;
+    }
     // handle the case that the connection closed due to the receiver quitting
     if !socket.can_send() {
         log::trace!("tx can't send, will retry");
@@ -182,6 +189,15 @@ pub(crate) fn std_tcp_rx(
         return;
     }
 
+    // CloseWait/Closed with an empty rx buffer can never become readable (the
+    // FIN already arrived): deliver EOF now — valid=None with a nonzero
+    // offset decodes as Ok(0), matching the NetPump rx reaper.
+    if socket.state() == tcp::State::CloseWait || socket.state() == tcp::State::Closed {
+        body.valid = None;
+        body.offset = xous::MemoryAddress::new(1);
+        return;
+    }
+
     log::debug!("socket was not able to receive, adding it to list of waiting messages");
 
     // Add the message to the TcpRxWaiting list, which will prevent it from getting
@@ -244,6 +260,11 @@ pub(crate) fn std_tcp_peek(
     } else {
         if nonblocking {
             respond_with_error(msg, NetError::WouldBlock);
+        } else if socket.state() == tcp::State::CloseWait || socket.state() == tcp::State::Closed {
+            // Same as the read case: the FIN already arrived, so parking would block
+            // this peek forever; valid=None with a nonzero offset decodes as Ok(0).
+            body.valid = None;
+            body.offset = xous::MemoryAddress::new(1);
         } else {
             // Add the message to the TcpRxWaiting list, which will prevent it from getting
             // responded to right away.

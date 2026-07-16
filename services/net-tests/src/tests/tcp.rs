@@ -62,7 +62,6 @@ fn close_listener_with_pump_kick(desc: &str, listener: TcpListener) {
 }
 
 /// After the peer drops (FIN), read returns Ok(0), and Ok(0) again on repeat.
-/// XFAIL: a read issued after the FIN parks forever, the same rx-completion gap
 /// as smoke::tcp_drop_close_delivers_eof, services/net/src/main.rs.
 pub fn tcp_read_eof_after_peer_drop() {
     let (client, served, listener, _addr) = connected_pair();
@@ -368,7 +367,6 @@ pub fn tcp_half_close_server_replies_after_client_fin() {
 
 /// Reverse half-close: the accepted stream drops (graceful FIN), the client
 /// reads Ok(0), and its first small write after EOF still completes locally.
-/// XFAIL: the client read parks forever; the EOF gap is in the rx wait path itself, not the accepted-socket auto-close, services/net/src/main.rs.
 pub fn tcp_half_close_server_fin_client_still_writes() {
     let (client, served, listener, _addr) = connected_pair();
     discard(served); // graceful FIN from the accepted side
@@ -1053,9 +1051,7 @@ pub const TESTS: &[TestEntry] = &[
 ];
 
 pub const XFAILS: &[XfailEntry] = &[
-    ("tcp::tcp_read_eof_after_peer_drop", "NTC-3"),
     ("tcp::tcp_half_close_server_replies_after_client_fin", "NTC-3"),
-    ("tcp::tcp_half_close_server_fin_client_still_writes", "NTC-3"),
     ("tcp::tcp_connect_timeout_duration_max_ok", "NTC-13"),
     ("tcp::tcp_read_zero_len_buffer_quiet", "NTC-14"),
     ("tcp::tcp_write_zero_len", "NTC-7"),

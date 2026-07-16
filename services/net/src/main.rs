@@ -363,9 +363,10 @@ fn main() -> ! {
         Option<(
             xous::MessageEnvelope,
             SocketHandle,
-            u16, /* fd */
-            u16, /* local_port */
-            u16, /* remote_port */
+            u16,                /* fd */
+            u16,                /* local_port */
+            u16,                /* remote_port */
+            Option<NonZeroU64>, /* connect deadline in ticktimer ms; None = no user timeout */
         )>,
     > = Vec::new();
 
@@ -785,6 +786,7 @@ fn main() -> ! {
                 std_tcp_connect(
                     msg,
                     local_port,
+                    &timer,
                     &mut iface,
                     &mut sockets,
                     &mut tcp_connect_waiting,
@@ -1438,7 +1440,7 @@ fn main() -> ! {
                 // log::trace!("pump: tcpconnect");
                 for connection in tcp_connect_waiting.iter_mut() {
                     let socket;
-                    let (env, handle, fd, local_port, remote_port) = {
+                    let (env, handle, fd, local_port, remote_port, expiry) = {
                         // If the connection is blank, or if it's still waiting to get
                         // connected, don't do anything.
                         match connection {
@@ -1463,6 +1465,14 @@ fn main() -> ! {
                         // aborts the established session on a later peer stall.
                         sockets.get_mut::<tcp::Socket>(handle).set_timeout(None);
                         respond_with_connected(env, fd, local_port, remote_port);
+                    } else if socket.state() == smoltcp::socket::tcp::State::Closed
+                        && expiry.map_or(true, |e| now < e.get())
+                    {
+                        // Closed before the user's deadline can't be a timeout abort (the SYN goes
+                        // out only after the deadline is computed, so aborts land at or after it);
+                        // the only other path to Closed pre-Established is an inbound RST.
+                        log::debug!("connect Closed before expiry {:?} (now {}): refused", expiry, now);
+                        respond_with_error(env, NetError::ConnectionRefused);
                     } else {
                         respond_with_error(env, NetError::TimedOut);
                     }

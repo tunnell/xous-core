@@ -429,6 +429,7 @@ pub enum NetError {
     // AlreadyUsed = 7,
     TimedOut = 8,
     WouldBlock = 9,
+    ConnectionRefused = 10,
 }
 
 /////// a bunch of structures are re-derived here so we can infer `rkyv` traits on them

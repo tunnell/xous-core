@@ -10,9 +10,12 @@ use crate::*;
 pub(crate) fn std_tcp_connect(
     mut msg: xous::MessageEnvelope,
     local_port: u16,
+    timer: &Ticktimer,
     iface: &mut Interface,
     sockets: &mut SocketSet,
-    tcp_connect_waiting: &mut Vec<Option<(xous::MessageEnvelope, SocketHandle, u16, u16, u16)>>,
+    tcp_connect_waiting: &mut Vec<
+        Option<(xous::MessageEnvelope, SocketHandle, u16, u16, u16, Option<NonZeroU64>)>,
+    >,
     our_sockets: &mut Vec<Option<SocketHandle>>,
 ) {
     // Ignore nonblocking and scalar messages
@@ -59,10 +62,15 @@ pub(crate) fn std_tcp_connect(
 
     tcp_socket.set_timeout(timeout_ms.map(|t| Duration::from_millis(t.get())));
 
+    // Record when the user's connect timeout expires, on the same ticktimer clock the NetPump
+    // scan reads. saturating_add: a huge timeout must clamp, not wrap into the past.
+    let expiry = timeout_ms
+        .map(|t| NonZeroU64::new(timer.elapsed_ms().saturating_add(t.get())).expect("nonzero expiry"));
+
     // Add the socket onto the list of sockets waiting to connect, since the connection will
     // take time.
     let idx = insert_or_append(our_sockets, handle) as u16;
-    insert_or_append(tcp_connect_waiting, (msg, handle, idx, local_port, remote_port));
+    insert_or_append(tcp_connect_waiting, (msg, handle, idx, local_port, remote_port, expiry));
     log::debug!("connect waiting now: {}, {:?} {:?} {:?}", idx, handle, local_port, remote_port);
 }
 

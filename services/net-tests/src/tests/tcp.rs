@@ -85,7 +85,6 @@ pub fn tcp_read_eof_after_peer_drop() {
 
 /// Writes on the accepted socket after the client drops must eventually fail
 /// (early Ok()s allowed; xous-pinned kind BrokenPipe).
-/// XFAIL: the write parks in tcp_tx_waiting forever, the state-Closed tx reaper never running on a quiet pump, services/net/src/main.rs.
 pub fn tcp_write_after_peer_drop() {
     let (client, served, listener, _addr) = connected_pair();
     discard(client); // FIN + auto-close of `served`
@@ -1055,7 +1054,6 @@ pub const TESTS: &[TestEntry] = &[
 
 pub const XFAILS: &[XfailEntry] = &[
     ("tcp::tcp_read_eof_after_peer_drop", "NTC-3"),
-    ("tcp::tcp_write_after_peer_drop", "NTC-1"),
     ("tcp::tcp_half_close_server_replies_after_client_fin", "NTC-3"),
     ("tcp::tcp_half_close_server_fin_client_still_writes", "NTC-3"),
     ("tcp::tcp_connect_timeout_duration_max_ok", "NTC-13"),

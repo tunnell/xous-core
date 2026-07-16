@@ -177,7 +177,6 @@ pub fn tcp_shutdown_write() {
 
 /// Closing a TCP socket that generated no traffic must complete: dropping a
 /// never-connected listener returns promptly.
-/// XFAIL: StdTcpClose parks in tcp_tx_closing, serviced only when the pump poll() reports activity — never on a quiet socket, services/net/src/main.rs.
 pub fn tcp_close_idle_listener() {
     let port = next_port();
     let listener = check!(TcpListener::bind(SocketAddr::new(LOOPBACK, port)));
@@ -255,7 +254,6 @@ fn udp_roundtrip(ip: IpAddr) {
 
 /// A 2 s read timeout on a quiet connected socket must surface as WouldBlock
 /// or TimedOut after roughly 2 s.
-/// XFAIL: the timeout reapers run only past the pump poll() early-return that a quiet socket never trips, services/net/src/main.rs.
 pub fn tcp_read_timeout_quiet() {
     let port = next_port();
     let addr = SocketAddr::new(LOOPBACK, port);
@@ -384,7 +382,5 @@ pub const XFAILS: &[(&str, &str)] = &[
     ("smoke::tcp_drop_close_delivers_eof", "NTC-3"),
     ("smoke::tcp_connect_refused", "NTC-6"),
     ("smoke::tcp_shutdown_write", "NTC-4"),
-    ("smoke::tcp_close_idle_listener", "NTC-5"),
     ("smoke::udp_send_recv_loopback", "NTC-2"),
-    ("smoke::tcp_read_timeout_quiet", "NTC-1"),
 ];

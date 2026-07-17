@@ -1,4 +1,4 @@
-use smoltcp::wire::{IpAddress, IpEndpoint};
+use smoltcp::wire::{IpAddress, IpEndpoint, IpListenEndpoint};
 use ticktimer_server::Ticktimer;
 
 use crate::*;
@@ -43,8 +43,13 @@ pub(crate) fn std_udp_bind(
     let handle = sockets.add(udp_socket);
     let udp_socket = sockets.get_mut::<udp::Socket>(handle);
 
-    // Attempt to connect, returning the error if there is one
-    if let Err(e) = udp_socket.bind(IpEndpoint { addr: address, port: local_port }).map_err(|e| match e {
+    // An unspecified bind (0.0.0.0) must become an address-wildcard endpoint (addr: None):
+    // smoltcp delivers only on exact Some(..) matches, so Some(0.0.0.0) would never match.
+    // Specific addresses (127.0.0.1, our own IP, ...) are kept and matched exactly.
+    let addr = if address.is_unspecified() { None } else { Some(address) };
+
+    // Attempt to bind, returning the error if there is one
+    if let Err(e) = udp_socket.bind(IpListenEndpoint { addr, port: local_port }).map_err(|e| match e {
         smoltcp::socket::udp::BindError::InvalidState => NetError::SocketInUse,
         smoltcp::socket::udp::BindError::Unaddressable => NetError::Unaddressable,
     }) {
@@ -102,36 +107,14 @@ pub(crate) fn std_udp_rx(
     };
     let do_peek = body.offset.is_some();
     log::debug!("udp rx from fd {}", connection_handle_index);
-    let local_addr = match iface.ipv4_addr() {
-        Some(addr) => addr,
-        None => {
-            std_failure(msg, NetError::Unaddressable);
-            return;
-        }
-    };
-    let socket = sockets.get_mut::<udp::Socket>(*handle);
-    let port = socket.endpoint().port;
-    // TODO: comment below may be invalid after port to latest smoltcp. Error handler
-    // is also suspect.
-    //
-    // force the local address to correspond to our (one and only) IP address
-    // the underlying smoltcp library can't handle unspecified source addresses
-    // because the library itself works with multiple interfaces and has no default resolution mechanism
-    // this may eventually get fixed see https://github.com/smoltcp-rs/smoltcp/issues/599
-    if socket.endpoint().addr.expect("UDP endpoint missing") != IpAddress::Ipv4(local_addr) {
-        if socket.is_open() {
-            socket.close();
-        }
-        if let Err(e) =
-            socket.bind(IpEndpoint { addr: IpAddress::Ipv4(local_addr), port }).map_err(|e| match e {
-                smoltcp::socket::udp::BindError::Unaddressable => NetError::WouldBlock,
-                _ => NetError::LibraryError,
-            })
-        {
-            std_failure(msg, e);
-            return;
-        }
+    // Keep the bound address: a 127.0.0.1-bound socket must keep matching loopback datagrams
+    // (a force-rebind to the interface address would match no socket and drop what's queued).
+    // Receiving does still require the interface to have an address.
+    if iface.ipv4_addr().is_none() {
+        std_failure(msg, NetError::Unaddressable);
+        return;
     }
+    let socket = sockets.get_mut::<udp::Socket>(*handle);
     if socket.can_recv() {
         log::debug!("receiving data right away");
         if do_peek {
@@ -223,33 +206,14 @@ pub(crate) fn std_udp_tx(
         remote_port,
         &bytes[21..21 + len as usize]
     );
-    let local_addr = match iface.ipv4_addr() {
-        Some(addr) => addr,
-        None => {
-            std_failure(msg, NetError::Unaddressable);
-            return;
-        }
-    };
-    let socket = sockets.get_mut::<udp::Socket>(*handle);
-    let port = socket.endpoint().port;
-    // force the local address to correspond to our (one and only) IP address
-    // the underlying smoltcp library can't handle unspecified source addresses
-    // because the library itself works with multiple interfaces and has no default resolution mechanism
-    // this may eventually get fixed see https://github.com/smoltcp-rs/smoltcp/issues/599
-    if socket.endpoint().addr.expect("UDP TX endpoint missing") != IpAddress::Ipv4(local_addr) {
-        if socket.is_open() {
-            socket.close();
-        }
-        if let Err(e) =
-            socket.bind(IpEndpoint { addr: IpAddress::Ipv4(local_addr), port }).map_err(|e| match e {
-                smoltcp::socket::udp::BindError::InvalidState => NetError::WouldBlock,
-                smoltcp::socket::udp::BindError::Unaddressable => NetError::Unaddressable,
-            })
-        {
-            std_failure(msg, e);
-            return;
-        }
+    // The bound address is left untouched here as well: smoltcp picks a source address at dispatch
+    // time for wildcard-bound sockets, and a socket bound to a specific address must send from it.
+    // Sending does still require the interface to have an address.
+    if iface.ipv4_addr().is_none() {
+        std_failure(msg, NetError::Unaddressable);
+        return;
     }
+    let socket = sockets.get_mut::<udp::Socket>(*handle);
     match socket.send_slice(&bytes[21..21 + len as usize], IpEndpoint::new(address, remote_port)) {
         Ok(_) => unsafe {
             body.buf.as_slice_mut()[0] = 0;

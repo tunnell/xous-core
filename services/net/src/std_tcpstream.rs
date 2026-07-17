@@ -60,7 +60,11 @@ pub(crate) fn std_tcp_connect(
         return;
     }
 
-    tcp_socket.set_timeout(timeout_ms.map(|t| Duration::from_millis(t.get())));
+    // smoltcp multiplies ms by 1000 in u64 and Instant + Duration reinterprets the µs total
+    // as i64, so a huge timeout (u64::MAX ms from connect_timeout(Duration::MAX)) wraps
+    // negative and aborts before the SYN. Clamp to keep the µs math in i64 range.
+    const MAX_TIMEOUT_MS: u64 = (i64::MAX / 2) as u64 / 1_000;
+    tcp_socket.set_timeout(timeout_ms.map(|t| Duration::from_millis(t.get().min(MAX_TIMEOUT_MS))));
 
     // Record when the user's connect timeout expires, on the same ticktimer clock the NetPump
     // scan reads. saturating_add: a huge timeout must clamp, not wrap into the past.
@@ -81,6 +85,7 @@ pub(crate) fn std_tcp_tx(
     sockets: &mut SocketSet,
     tcp_tx_waiting: &mut Vec<Option<WaitingSocket>>,
     our_sockets: &Vec<Option<SocketHandle>>,
+    nonblocking: bool,
 ) {
     let connection_handle_index = (msg.body.id() >> 16) & 0xffff;
     let body = match msg.body.memory_message_mut() {
@@ -109,6 +114,17 @@ pub(crate) fn std_tcp_tx(
     }
     // handle the case that the connection closed due to the receiver quitting
     if !socket.can_send() {
+        if nonblocking {
+            if socket.state() == tcp::State::Closed {
+                // the socket is gone: report what a parked writer would eventually get
+                // from the pump (the client surfaces this as BrokenPipe), not a
+                // WouldBlock that would invite retrying a dead socket
+                respond_with_error(msg, NetError::TimedOut);
+            } else {
+                respond_with_error(msg, NetError::WouldBlock);
+            }
+            return;
+        }
         log::trace!("tx can't send, will retry");
         let expiry =
             body.offset.map(|x| unsafe { NonZeroU64::new_unchecked(x.get() as u64 + timer.elapsed_ms()) });
@@ -121,10 +137,8 @@ pub(crate) fn std_tcp_tx(
     // Perform the transfer
     let sent_octets = {
         let data = unsafe { body.buf.as_slice::<u8>() };
-        let length = body
-            .valid
-            .map(|v| if v.get() > data.len() { data.len() } else { v.get() })
-            .unwrap_or_else(|| data.len());
+        // `valid` is None for a zero-length write; send nothing, not the whole lent page.
+        let length = body.valid.map(|v| if v.get() > data.len() { data.len() } else { v.get() }).unwrap_or(0);
 
         match socket.send_slice(&data[..length]) {
             Ok(octets) => octets,
@@ -171,6 +185,13 @@ pub(crate) fn std_tcp_rx(
             return;
         }
     };
+
+    // A zero-length read (`body.valid` is `None`) has nothing to wait for: succeed before
+    // the `can_recv()` gate so it can never park; the client decodes it as Ok(0).
+    if body.valid.is_none() {
+        body.offset = xous::MemoryAddress::new(1);
+        return;
+    }
 
     let socket = sockets.get_mut::<tcp::Socket>(*handle);
     if socket.can_recv() {
@@ -246,6 +267,13 @@ pub(crate) fn std_tcp_peek(
             return;
         }
     };
+
+    // A zero-length peek (`body.valid` is `None`) has nothing to wait for: succeed before
+    // the `can_recv()` gate so it can never park; the client decodes it as Ok(0).
+    if body.valid.is_none() {
+        body.offset = xous::MemoryAddress::new(1);
+        return;
+    }
 
     let socket = sockets.get_mut::<tcp::Socket>(*handle);
     if socket.can_recv() {

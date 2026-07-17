@@ -459,7 +459,6 @@ pub fn tcp_listener_port_zero_assigned() {
 
 /// connect_timeout(addr, Duration::MAX) to a live listener must succeed, not
 /// overflow into an immediate failure.
-/// XFAIL: the saturated u64 timeout-ms overflow smoltcp's i64-ms Instant math and poison the connect before the SYN, services/net/src/std_tcpstream.rs.
 pub fn tcp_connect_timeout_duration_max_ok() {
     let port = next_port();
     let addr = SocketAddr::new(LOOPBACK, port);
@@ -666,12 +665,11 @@ pub fn tcp_read_zero_len_buffer_pending() {
 }
 
 /// read(&mut []) with NO pending data must still return Ok(0) promptly.
-/// XFAIL: the server parks any read while can_recv() is false without checking
 /// the buffer length, so a zero-length read waits forever, services/net/src/std_tcpstream.rs.
 pub fn tcp_read_zero_len_buffer_quiet() {
     let (client, served, listener, _addr) = connected_pair();
-    // the peer must stay open and quiet through the read window, and the
-    // expected-failure path panics past this frame: park both in ManuallyDrop
+    // the peer must stay open and quiet through the read window, and a
+    // regression here panics past this frame: park both in ManuallyDrop
     // (leaked on panic, discarded on the happy path — NTC-5)
     let served = ManuallyDrop::new(served);
     let listener = ManuallyDrop::new(listener);
@@ -690,7 +688,6 @@ pub fn tcp_read_zero_len_buffer_quiet() {
 
 /// write(&[]) returns Ok(0), the peer receives NOTHING, and a following 1-byte
 /// marker arrives alone and first.
-/// XFAIL: on valid=0 the server falls back to length=data.len() and send_slice injects up to 1530 garbage bytes, services/net/src/std_tcpstream.rs.
 pub fn tcp_write_zero_len() {
     let (client, served, listener, _addr) = connected_pair();
     let mut served = ManuallyDrop::new(served);
@@ -1052,7 +1049,4 @@ pub const TESTS: &[TestEntry] = &[
 
 pub const XFAILS: &[XfailEntry] = &[
     ("tcp::tcp_half_close_server_replies_after_client_fin", "NTC-3"),
-    ("tcp::tcp_connect_timeout_duration_max_ok", "NTC-13"),
-    ("tcp::tcp_read_zero_len_buffer_quiet", "NTC-14"),
-    ("tcp::tcp_write_zero_len", "NTC-7"),
 ];

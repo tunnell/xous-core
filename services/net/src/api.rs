@@ -364,7 +364,7 @@ pub(crate) enum Opcode {
     // do not use any numbers higher than 0x8000 as that is reserved for the nonblocking flag
 }
 #[allow(dead_code)]
-pub(crate) const NONBLOCKING_FLAG: usize = 0x8000; // when set, modulates a Peek or Read to be nonblocking
+pub(crate) const NONBLOCKING_FLAG: usize = 0x8000; // when set, makes a Peek, Read, or Tx nonblocking
 
 #[derive(Debug, Archive, Serialize, Deserialize, Copy, Clone, Default)]
 pub enum ScanState {

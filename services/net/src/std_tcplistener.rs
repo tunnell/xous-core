@@ -126,7 +126,10 @@ pub(crate) fn std_tcp_accept(
 
     let socket = sockets.get::<tcp::Socket>(*handle);
 
-    if socket.is_active() {
+    // Return the connection only if it wasn't already handed to a concurrent accept on a
+    // cloned listener (`tcp_server_remote_close_poll` records hand-outs); otherwise park,
+    // and the pump's accept scan serves this caller instead of aliasing the connection.
+    if socket.is_active() && !tcp_server_remote_close_poll.contains(handle) {
         log::debug!("accept did not block; immediately returning TcpSocket");
         let buf = unsafe { body.buf.as_slice_mut::<u8>() };
         tcp_server_remote_close_poll.push(*handle);
@@ -144,6 +147,10 @@ pub(crate) fn std_tcp_accept(
     }
     log::debug!("TCP listener added to accept queue");
 
+    // The local port is only knowable here if the socket has gone active (smoltcp exposes no local
+    // endpoint in the Listen state); otherwise the pump's accept scan recovers it lazily.
+    let local_port = socket.local_endpoint().map(|local| local.port);
+
     // Adding the message to the udp_rx_waiting list prevents it from going out of scope and
     // thus prevents the .drop() method from being called. Since messages are returned to the sender
     // in the .drop() method, this keeps the caller blocked for the lifetime of the message.
@@ -154,6 +161,7 @@ pub(crate) fn std_tcp_accept(
                        * lend_mut from returning. */
             handle: *handle,
             fd,
+            local_port,
         },
     );
 }

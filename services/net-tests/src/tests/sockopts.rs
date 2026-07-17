@@ -241,18 +241,15 @@ pub fn ipv6_surface_rejected() {
     }
 }
 
-/// DANGER — disabled, NOT registered: TcpStream::connect to an IPv6 address
-/// panics the net service. std_tcp_connect applies no v4 whitelist, so the v6
-/// remote reaches smoltcp and the next poll unwraps None during source
-/// selection. Fix: a v4-only check mirroring the listen whitelist.
-#[allow(dead_code)]
+/// TcpStream::connect to an IPv6 address is rejected with AddrNotAvailable;
+/// the interface is v4-only.
 pub fn tcp_connect_v6_panics_net_service() {
     let v6_addr = SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), next_port());
     match bounded("connect to a v6 address", 10, move || TcpStream::connect(v6_addr)) {
         Ok(s) => {
             discard(s);
             panic!(
-                "TcpStream::connect(v6) returned Ok — the net service panics on the following poll (NTC-16)"
+                "TcpStream::connect(v6) unexpectedly succeeded — the v4-only guard must reject it (NTC-16)"
             );
         }
         Err(e) => assert_eq!(
@@ -265,22 +262,19 @@ pub fn tcp_connect_v6_panics_net_service() {
     }
 }
 
-/// DANGER — disabled, NOT registered: UdpSocket::bind on an IPv6 address
-/// panics the net service the same way — std_udp_bind has no whitelist, so the
-/// v6 endpoint reaches smoltcp and the next poll unwraps None. Fix: a v4-only
-/// check in std_udp_bind.
-#[allow(dead_code)]
+/// UdpSocket::bind on an IPv6 address is rejected with InvalidInput; the
+/// interface is v4-only.
 pub fn udp_bind_v6_panics_net_service() {
     let v6_udp_addr = SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), next_port());
     match UdpSocket::bind(v6_udp_addr) {
         Ok(sock) => {
             drop(sock);
-            panic!("UdpSocket::bind(v6) returned Ok — the net service panics on the following poll (NTC-16)");
+            panic!("UdpSocket::bind(v6) unexpectedly succeeded — the v4-only guard must reject it (NTC-16)");
         }
         Err(e) => assert_eq!(
             e.kind(),
-            ErrorKind::AddrNotAvailable,
-            "v6 UDP bind surfaced as {:?} ({}), want AddrNotAvailable",
+            ErrorKind::InvalidInput,
+            "v6 UDP bind surfaced as {:?} ({}), want InvalidInput",
             e.kind(),
             e
         ),
@@ -297,6 +291,8 @@ pub const TESTS: &[(&str, fn())] = &[
     ("sockopts::listener_only_v6_unsupported", listener_only_v6_unsupported as fn()),
     ("sockopts::set_nonblocking_toggle_all_types", set_nonblocking_toggle_all_types as fn()),
     ("sockopts::ipv6_surface_rejected", ipv6_surface_rejected as fn()),
+    ("sockopts::tcp_connect_v6_panics_net_service", tcp_connect_v6_panics_net_service as fn()),
+    ("sockopts::udp_bind_v6_panics_net_service", udp_bind_v6_panics_net_service as fn()),
 ];
 
 /// No XFAILs in this theme: every registered test is an as-is PASS or a

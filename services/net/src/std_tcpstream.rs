@@ -3,6 +3,7 @@ use std::convert::TryInto;
 
 use smoltcp::iface::{Interface, SocketHandle};
 use smoltcp::socket::tcp;
+use smoltcp::wire::IpAddress;
 use ticktimer_server::Ticktimer;
 
 use crate::*;
@@ -39,6 +40,14 @@ pub(crate) fn std_tcp_connect(
             return;
         }
     };
+
+    // The interface is IPv4-only, and smoltcp 0.11's IPv6 source-address selection panics
+    // inside tcp::Socket::connect for v6 destinations. Reject other families before any
+    // socket is created, mirroring the v4-only address check in std_tcp_listen.
+    if !matches!(address, IpAddress::Ipv4(_)) {
+        respond_with_error(msg, NetError::Unaddressable);
+        return;
+    }
 
     // initiates a new connection to a remote server consisting of an (Address:Port) tuple.
     // multiple connections can exist to a server, and they are further differentiated by the return port

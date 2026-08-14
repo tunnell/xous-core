@@ -5,32 +5,32 @@ use num_traits::*;
 use xous::{CID, msg_scalar_unpack};
 use xous_ipc::Buffer;
 
-pub(crate) const SERVER_NAME_ICONTRAY: &'static str = "_chat icon tray plugin_";
-
 #[allow(dead_code)]
 pub struct Icontray {
     cid: Option<CID>,
 }
 
 impl Icontray {
-    pub fn new(cid: Option<CID>, icons: [&'static str; 4]) -> Self {
+    // The server name is per-app (see Ui::new): a fixed name here
+    // means the second chat app in one image fails registration.
+    pub fn new(server_name: String, cid: Option<CID>, icons: [&'static str; 4]) -> Self {
         log::info!("Starting icontray handler server",);
         let _ = thread::spawn({
             move || {
-                server(cid, icons);
+                server(server_name, cid, icons);
             }
         });
         Icontray { cid }
     }
 }
 
-pub(crate) fn server(_cid: Option<CID>, icons: [&str; 4]) {
+pub(crate) fn server(server_name: String, _cid: Option<CID>, icons: [&str; 4]) {
     let xns = xous_names::XousNames::new().unwrap();
     // one connection only, should be the GAM
     // however, because the predictor is connected only on demand -- we leave this as open-ended, which
     // means anyone could send something to this server if they knew the name of it.
 
-    let ime_sh_sid = xns.register_name(SERVER_NAME_ICONTRAY, None).expect("can't register server");
+    let ime_sh_sid = xns.register_name(&server_name, None).expect("can't register server");
 
     let mytriggers = PredictionTriggers { newline: false, punctuation: false, whitespace: false };
 

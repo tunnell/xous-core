@@ -99,11 +99,15 @@ impl Ui {
         let xns = XousNames::new().unwrap();
         let gam = gam::Gam::new(&xns).expect("can't connect to GAM");
 
+        // Per-app predictor server name: two chat apps in one image
+        // each spawn an icontray, and a shared name would fail the
+        // second registration.
+        let icontray_name = format!("_{} icontray_", app_name);
         let token = gam
             .register_ux(UxRegistration {
                 app_name: String::from(app_name),
                 ux_type: gam::UxType::Chat,
-                predictor: Some(String::from(crate::icontray::SERVER_NAME_ICONTRAY)),
+                predictor: Some(icontray_name.clone()),
                 listener: sid.to_array(), /* note disclosure of our SID to the GAM -- the secret is now
                                            * shared with the GAM! */
                 redraw_id: ChatOp::GamRedraw as u32,
@@ -119,7 +123,8 @@ impl Ui {
         let canvas = gam.request_content_canvas(token).expect("couldn't get content canvas");
         let screensize = gam.get_canvas_bounds(canvas).expect("couldn't get dimensions of content canvas");
         // TODO this is a stub - implement F1-4 actions and autocompletes
-        let _icontray = Icontray::new(Some(xous::connect(sid).unwrap()), ["F1", "F2", "F3", "F4"]);
+        let _icontray =
+            Icontray::new(icontray_name, Some(xous::connect(sid).unwrap()), ["F1", "F2", "F3", "F4"]);
         let menu_mgr = menu_matic(Vec::<MenuItem>::new(), app_menu, Some(xous::create_server().unwrap()))
             .expect("couldn't create MenuMatic manager");
         let pddb = pddb::Pddb::new();

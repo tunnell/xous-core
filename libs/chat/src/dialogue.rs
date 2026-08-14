@@ -110,23 +110,29 @@ impl Dialogue {
                     self.posts.insert(0, new);
                 } else {
                     // insert a new post in the correct position
-                    // OR replace an existing post with matching timestamp & author
+                    // OR replace an existing post with matching timestamp & author.
+                    // The scan must include the last index: a repost of the
+                    // newest post (a send-status update) lands exactly there,
+                    // and the old i..last bound silently dropped it.
                     let i = self.posts.partition_point(|p| p.timestamp() < new_ts);
-                    let last = self.posts.len() - 1;
-                    for n in i..last {
-                        if let Some(old) = self.posts.get(n) {
-                            if old.timestamp() == new_ts {
-                                if old.author_id() == author_id {
-                                    log::info!("replace matching post at {n}");
-                                    self.posts[i] = new;
-                                    break;
-                                }
-                            } else {
-                                log::info!("insert new post at {n}");
-                                self.posts.insert(n, new);
+                    let mut new = Some(new);
+                    for n in i..self.posts.len() {
+                        if self.posts[n].timestamp() == new_ts {
+                            if self.posts[n].author_id() == author_id {
+                                log::info!("replace matching post at {n}");
+                                self.posts[n] = new.take().unwrap();
                                 break;
                             }
+                        } else {
+                            log::info!("insert new post at {n}");
+                            self.posts.insert(n, new.take().unwrap());
+                            break;
                         }
+                    }
+                    if let Some(p) = new {
+                        // an equal-timestamp run reached the end without a
+                        // matching author; the post still belongs in the list
+                        self.posts.push(p);
                     }
                 }
                 Ok(())

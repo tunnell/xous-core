@@ -150,16 +150,13 @@ impl Dialogue {
     pub fn post_find(&self, author: &str, timestamp: u64) -> Option<usize> {
         if let Some(author_id) = self.author_lookup.get(author) {
             let i = self.posts.partition_point(|p| p.timestamp() < timestamp);
-            let last = self.posts.len() - 1;
-            for n in i..last {
-                if let Some(post) = self.posts.get(n) {
-                    if post.timestamp() == timestamp {
-                        if post.author_id() == *author_id {
-                            return Some(n);
-                        }
-                    } else {
-                        break;
-                    }
+            // the scan must run through the last index: the newest post is the common find target
+            for (n, post) in self.posts.iter().enumerate().skip(i) {
+                if post.timestamp() != timestamp {
+                    break;
+                }
+                if post.author_id() == *author_id {
+                    return Some(n);
                 }
             }
         }

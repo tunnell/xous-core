@@ -36,6 +36,8 @@ pub enum ChatOp {
     /// Find a Post by timestamp and Author
     PostFind,
     PostFlag,
+    /// Set the flags on an Author of the current Dialogue
+    AuthorFlagsSet,
     /// Set status bar text
     SetStatusText,
     /// Run or stop the busy animation.
@@ -78,6 +80,12 @@ pub struct Find {
 pub struct Dialogue {
     pub dict: String,
     pub key: Option<String>,
+}
+
+#[derive(Archive, Serialize, Deserialize, Debug)]
+pub struct AuthorFlags {
+    pub author: String,
+    pub flags: u16, // AuthorFlag bits (EnumSet::as_u16)
 }
 
 #[derive(Archive, Serialize, Deserialize, Debug)]

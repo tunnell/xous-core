@@ -99,10 +99,9 @@ impl Ui {
         let xns = XousNames::new().unwrap();
         let gam = gam::Gam::new(&xns).expect("can't connect to GAM");
 
-        // Per-app predictor server name: two chat apps in one image
-        // each spawn an icontray, and a shared name would fail the
-        // second registration.
-        let icontray_name = format!("_{} icontray_", app_name);
+        // the icontray server name is per-app: two chat apps in one image each spawn one, and a
+        // shared name would fail the second registration
+        let icontray_name = format!("_{} icon tray plugin_", app_name);
         let token = gam
             .register_ux(UxRegistration {
                 app_name: String::from(app_name),
@@ -274,11 +273,8 @@ impl Ui {
     pub fn dialogue_set(&mut self, pddb_dict: &str, pddb_key: Option<&str>) {
         self.pddb_dict = Some(pddb_dict.to_string());
         self.pddb_key = pddb_key.map(|key| key.to_string());
-        // A dialogue switch is a new view: drop the selection and layout
-        // range of the previous dialogue. Stale indices from another
-        // conversation otherwise pass the layout consistency check and
-        // suppress the range recompute (and its lazy bounding-box fill)
-        // against the new post list.
+        // drop layout state from the previous dialogue: stale indices would pass the consistency
+        // check in layout() and suppress the range recompute against the new post list
         self.layout_selected = None;
         self.layout_range.clear();
         if self.pddb_key.is_none() {
@@ -412,6 +408,14 @@ impl Ui {
     /// # Arguments
     ///
     /// * `index` - index of the Post to retrieve
+
+    /// Set the flags on an Author of the current Dialogue; a warning no-op without one.
+    pub fn author_flags_set(&mut self, author: &str, flags: EnumSet<AuthorFlag>) {
+        match self.dialogue.as_mut() {
+            Some(dialogue) => dialogue.author_flags_set(author, flags),
+            None => log::warn!("no Dialogue available to set Author flags"),
+        }
+    }
     pub fn post_get(&self, index: usize) -> Option<&Post> {
         match &self.dialogue {
             Some(dialogue) => dialogue.post_get(index),
@@ -748,9 +752,7 @@ impl Ui {
                 // double check the actual bounds against expected bounds
                 match bubble_tv.bounds_computed {
                     Some(actual_r) => {
-                        // A missing precomputed box is a layout cache miss,
-                        // not a reason to take down the chat server; fall
-                        // back to the just-drawn bounds and say so.
+                        // missing precomputed bounds are filled lazily; fall back to the drawn bounds
                         let expected_r = post.bounding_box.unwrap_or_else(|| {
                             log::warn!(
                                 "post {} had no precomputed bounding box; using drawn bounds",

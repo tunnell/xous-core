@@ -9,6 +9,7 @@ use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub use api::*;
+pub use enumset::EnumSet;
 use blitstr2::GlyphStyle;
 use gam::MenuItem;
 use num_traits::FromPrimitive;
@@ -166,6 +167,22 @@ impl Chat {
         let chat = Chat::new("_Chat Read_", "unused", None, None, None, None);
         chat.dialogue_set(pddb_dict, pddb_key).unwrap();
         chat
+    }
+
+    /// Set the flags on an Author of the current Dialogue, by name. The Author is added if
+    /// absent, so an app may flag its local author before its first post; the change is
+    /// display-only until the app sends ChatOp::DialogueSave.
+    ///
+    /// # Arguments
+    ///
+    /// * `author` - the (external) name of the Author
+    /// * `flags` - the AuthorFlag set (e.g. AuthorFlag::Right to right-align own bubbles)
+    pub fn author_flags_set(&self, author: &str, flags: EnumSet<AuthorFlag>) -> Result<(), Error> {
+        let af = AuthorFlags { author: author.to_string(), flags: flags.as_u16() };
+        match Buffer::into_buf(af) {
+            Ok(buf) => buf.send(self.cid, ChatOp::AuthorFlagsSet as u32).map(|_| ()),
+            Err(_) => Err(xous::Error::InternalError),
+        }
     }
 
     /// Set the current Dialogue
@@ -624,6 +641,13 @@ pub fn server(
                     ui.menu_add(menu_item);
                 } else {
                     log::warn!("failed to deserialize MenuItem");
+                }
+            }
+            Some(ChatOp::AuthorFlagsSet) => {
+                let buffer = unsafe { Buffer::from_memory_message(msg.body.memory_message().unwrap()) };
+                match buffer.to_original::<AuthorFlags, _>() {
+                    Ok(af) => ui.author_flags_set(&af.author, EnumSet::from_u16(af.flags)),
+                    Err(e) => log::warn!("failed to deserialize AuthorFlags: {:?}", e),
                 }
             }
             Some(ChatOp::Quit) => {

@@ -11,8 +11,6 @@ pub struct Icontray {
 }
 
 impl Icontray {
-    // The server name is per-app (see Ui::new): a fixed name here
-    // means the second chat app in one image fails registration.
     pub fn new(server_name: String, cid: Option<CID>, icons: [&'static str; 4]) -> Self {
         log::info!("Starting icontray handler server",);
         let _ = thread::spawn({

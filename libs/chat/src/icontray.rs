@@ -5,6 +5,11 @@ use num_traits::*;
 use xous::{CID, msg_scalar_unpack};
 use xous_ipc::Buffer;
 
+use crate::api::IcontrayLabels;
+
+/// Server opcode for label updates, disjoint from the ime_plugin_api Opcode space.
+pub(crate) const OP_SET_LABELS: usize = 0x100;
+
 #[allow(dead_code)]
 pub struct Icontray {
     cid: Option<CID>,
@@ -32,10 +37,19 @@ pub(crate) fn server(server_name: String, _cid: Option<CID>, icons: [&str; 4]) {
 
     let mytriggers = PredictionTriggers { newline: false, punctuation: false, whitespace: false };
 
+    let mut labels: [String; 4] = icons.map(String::from);
     let mut api_token: Option<[u32; 4]> = None;
     loop {
         let mut msg = xous::receive_message(ime_sh_sid).unwrap();
         log::trace!("received message {:?}", msg);
+        if msg.body.id() == OP_SET_LABELS {
+            let buffer = unsafe { Buffer::from_memory_message(msg.body.memory_message().unwrap()) };
+            match buffer.to_original::<IcontrayLabels, _>() {
+                Ok(l) => labels = l.labels,
+                Err(e) => log::warn!("failed to deserialize IcontrayLabels: {:?}", e),
+            }
+            continue;
+        }
         match FromPrimitive::from_usize(msg.body.id()) {
             Some(Opcode::Acquire) => {
                 let mut buffer =
@@ -80,8 +94,8 @@ pub(crate) fn server(server_name: String, _cid: Option<CID>, icons: [&str; 4]) {
                 let mut prediction: Prediction = buffer.to_original::<Prediction, _>().unwrap();
                 // every key press, the four slots get queried
                 prediction.string.clear();
-                if prediction.index < icons.len() as u32 {
-                    prediction.string.push_str(icons[prediction.index as usize]);
+                if prediction.index < labels.len() as u32 {
+                    prediction.string.push_str(&labels[prediction.index as usize]);
                     prediction.valid = true;
                 } else {
                     prediction.valid = false;

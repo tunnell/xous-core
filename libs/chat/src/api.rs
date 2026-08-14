@@ -44,6 +44,8 @@ pub enum ChatOp {
     SetBusyAnimationState,
     /// Set the status idle text (to be shown when exiting all busy states)
     SetStatusIdleText,
+    /// Set the four icontray slot labels
+    SetIcontrayLabels,
     /// Update just the state of the busy animation, if any. Internal opcode.
     /// Will skip the update if called too often.
     UpdateBusy,
@@ -86,6 +88,11 @@ pub struct Dialogue {
 pub struct AuthorFlags {
     pub author: String,
     pub flags: u16, // AuthorFlag bits (EnumSet::as_u16)
+}
+
+#[derive(Archive, Serialize, Deserialize, Debug)]
+pub struct IcontrayLabels {
+    pub labels: [String; 4],
 }
 
 #[derive(Archive, Serialize, Deserialize, Debug)]

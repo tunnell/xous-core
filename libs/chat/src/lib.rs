@@ -306,6 +306,15 @@ impl Chat {
             .expect("failed to Redraw Chat UI");
     }
 
+    /// Set the four icontray slot labels, replacing the default "F1".."F4"
+    pub fn set_icontray_labels(&self, labels: [&str; 4]) -> Result<(), Error> {
+        let il = IcontrayLabels { labels: labels.map(String::from) };
+        match Buffer::into_buf(il) {
+            Ok(buf) => buf.send(self.cid, ChatOp::SetIcontrayLabels as u32).map(|_| ()),
+            Err(_) => Err(xous::Error::InternalError),
+        }
+    }
+
     /// Set the status bar text.
     ///
     /// # Arguments
@@ -443,6 +452,13 @@ pub fn server(
                 let buffer = unsafe { Buffer::from_memory_message(msg.body.memory_message().unwrap()) };
                 let s = buffer.to_original::<BusyMessage, _>().unwrap();
                 ui.set_status_text(s.busy_msg.as_str());
+            }
+            Some(ChatOp::SetIcontrayLabels) => {
+                let buffer = unsafe { Buffer::from_memory_message(msg.body.memory_message().unwrap()) };
+                match buffer.to_original::<IcontrayLabels, _>() {
+                    Ok(labels) => ui.set_icontray_labels(labels),
+                    Err(e) => log::warn!("failed to deserialize IcontrayLabels: {:?}", e),
+                }
             }
             Some(ChatOp::SetStatusIdleText) => {
                 let buffer = unsafe { Buffer::from_memory_message(msg.body.memory_message().unwrap()) };

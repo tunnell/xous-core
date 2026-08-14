@@ -83,6 +83,9 @@ pub(crate) struct Ui {
     app_menu: String,
     menu_mgr: MenuMatic,
 
+    // connection to this app's icontray server, for label updates
+    icontray_cid: CID,
+
     // our security token for making changes to our record on the GAM
     token: [u32; 4],
 }
@@ -123,7 +126,8 @@ impl Ui {
         let screensize = gam.get_canvas_bounds(canvas).expect("couldn't get dimensions of content canvas");
         // TODO this is a stub - implement F1-4 actions and autocompletes
         let _icontray =
-            Icontray::new(icontray_name, Some(xous::connect(sid).unwrap()), ["F1", "F2", "F3", "F4"]);
+            Icontray::new(icontray_name.clone(), Some(xous::connect(sid).unwrap()), ["F1", "F2", "F3", "F4"]);
+        let icontray_cid = xns.request_connection_blocking(&icontray_name).expect("can't connect to icontray");
         let menu_mgr = menu_matic(Vec::<MenuItem>::new(), app_menu, Some(xous::create_server().unwrap()))
             .expect("couldn't create MenuMatic manager");
         let pddb = pddb::Pddb::new();
@@ -180,6 +184,7 @@ impl Ui {
             menu_mode: true,
             app_menu: app_menu.to_owned(),
             menu_mgr,
+            icontray_cid,
             token,
             status_idle_text: t!("chat.status.initial", locales::LANG).to_string(),
         }
@@ -557,6 +562,17 @@ impl Ui {
 
     /// Returns `true` if the status bar is currently set for the busy animation
     pub(crate) fn is_busy(&self) -> bool { self.status_tv.busy_animation_state.is_some() }
+
+    /// Forward the four icontray slot labels to this app's icontray server
+    pub fn set_icontray_labels(&self, labels: IcontrayLabels) {
+        match Buffer::into_buf(labels) {
+            Ok(buf) => buf
+                .send(self.icontray_cid, crate::icontray::OP_SET_LABELS as u32)
+                .map(|_| ())
+                .unwrap_or_else(|e| log::warn!("couldn't send icontray labels: {:?}", e)),
+            Err(e) => log::warn!("couldn't serialize icontray labels: {:?}", e),
+        }
+    }
 
     /// Set the status bar text
     pub(crate) fn set_status_text(&mut self, msg: &str) {

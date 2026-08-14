@@ -4,7 +4,7 @@ pub mod post;
 
 use core::slice::{Iter, IterMut};
 use std::collections::HashMap;
-use std::io::{Error, ErrorKind};
+use std::io::{Error, ErrorKind, Read, Write};
 
 use author::Author;
 use gam::Gam;
@@ -224,5 +224,176 @@ impl Dialogue {
         } else {
             None
         }
+    }
+
+    /// Serialize this Dialogue with rkyv and write the full archive to `writer`.
+    ///
+    /// A single `PddbKey::write` call transfers at most one IPC buffer (4072
+    /// bytes, PDDB_BUF_DATA_LEN), so this must use `write_all`, which loops
+    /// until every byte is accepted. Returns the archive length in bytes.
+    pub fn write_to<W: Write>(&self, writer: &mut W) -> Result<usize, Error> {
+        let bytes = rkyv::to_bytes::<rkyv::rancor::Error>(self)
+            .map_err(|e| Error::new(ErrorKind::InvalidData, e.to_string()))?;
+        if bytes.len() > MAX_BYTES {
+            return Err(Error::new(
+                ErrorKind::InvalidData,
+                format!("Dialogue archive is {} bytes, exceeds MAX_BYTES {}", bytes.len(), MAX_BYTES),
+            ));
+        }
+        writer.write_all(&bytes)?;
+        Ok(bytes.len())
+    }
+
+    /// Read a full archive from `reader` and deserialize it into a Dialogue.
+    ///
+    /// A single `PddbKey::read` call also transfers at most one IPC buffer,
+    /// so this reads to the end of the key. The archive is validated with
+    /// bytecheck before access: a truncated or corrupt record comes back as
+    /// an error rather than undefined behaviour.
+    pub fn read_from<R: Read>(reader: &mut R) -> Result<Dialogue, Error> {
+        let mut bytes = Vec::<u8>::new();
+        reader.take((MAX_BYTES + 2) as u64).read_to_end(&mut bytes)?;
+        // rkyv archives must be accessed at their required alignment, which
+        // Vec<u8> does not guarantee; AlignedVec does.
+        let mut aligned = rkyv::util::AlignedVec::<16>::with_capacity(bytes.len());
+        aligned.extend_from_slice(&bytes);
+        let archive = rkyv::access::<ArchivedDialogue, rkyv::rancor::Error>(&aligned)
+            .map_err(|e| Error::new(ErrorKind::InvalidData, e.to_string()))?;
+        rkyv::deserialize::<Dialogue, rkyv::rancor::Error>(archive)
+            .map_err(|e| Error::new(ErrorKind::InvalidData, e.to_string()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// One PDDB IPC buffer holds 4072 bytes: PDDB_BUF_DATA_LEN in
+    /// services/pddb/src/api.rs is pub(crate), so the value is restated here.
+    const IPC_CAP: usize = 4072;
+
+    /// Mimics PddbKey IO: a single read() or write() call transfers at most
+    /// one IPC buffer (services/pddb/src/frontend/pddbkey.rs).
+    struct ChunkedKey {
+        data: Vec<u8>,
+        pos: usize,
+    }
+
+    impl ChunkedKey {
+        fn new() -> Self { Self { data: Vec::new(), pos: 0 } }
+
+        fn rewind(&mut self) { self.pos = 0; }
+
+        /// Models what dialogue_save does before writing: PddbKey has no
+        /// truncate, so the key is deleted and recreated to drop stale bytes.
+        fn recreate(&mut self) {
+            self.data.clear();
+            self.pos = 0;
+        }
+    }
+
+    impl Write for ChunkedKey {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            let n = buf.len().min(IPC_CAP);
+            if self.pos + n > self.data.len() {
+                self.data.resize(self.pos + n, 0);
+            }
+            self.data[self.pos..self.pos + n].copy_from_slice(&buf[..n]);
+            self.pos += n;
+            Ok(n)
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+    }
+
+    impl Read for ChunkedKey {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            let remaining = self.data.len().saturating_sub(self.pos);
+            let n = remaining.min(buf.len()).min(IPC_CAP);
+            buf[..n].copy_from_slice(&self.data[self.pos..self.pos + n]);
+            self.pos += n;
+            Ok(n)
+        }
+    }
+
+    /// Enough posts of known text that the archive exceeds one IPC buffer.
+    fn big_dialogue() -> Dialogue {
+        let mut dialogue = Dialogue::new("roundtrip");
+        for i in 0..120u64 {
+            let author = if i % 2 == 0 { "alice" } else { "bob" };
+            let text = format!("post {:04} abcdefghijklmnopqrstuvwxyz0123456789", i);
+            dialogue.post_add(author, 1_000_000 + i, &text, None, None).unwrap();
+        }
+        dialogue
+    }
+
+    #[test]
+    fn dialogue_roundtrip_exceeds_one_ipc_buffer() {
+        let dialogue = big_dialogue();
+        let mut key = ChunkedKey::new();
+        let written = dialogue.write_to(&mut key).unwrap();
+        assert!(written > IPC_CAP, "archive must exceed one IPC buffer to prove the fix, got {}", written);
+        assert_eq!(key.data.len(), written, "every archive byte must reach the key");
+
+        key.rewind();
+        let restored = Dialogue::read_from(&mut key).unwrap();
+        assert_eq!(dialogue.posts_as_slice().len(), restored.posts_as_slice().len());
+        for (a, b) in dialogue.posts().zip(restored.posts()) {
+            assert_eq!(a.text().as_bytes(), b.text().as_bytes());
+            assert_eq!(a.timestamp(), b.timestamp());
+            assert_eq!(a.author_id(), b.author_id());
+            assert_eq!(a.flags, b.flags);
+        }
+        // author names must survive too, or author_id equality proves nothing
+        for post in restored.posts() {
+            let original = dialogue.author(post.author_id()).map(|a| a.name.as_str());
+            let read_back = restored.author(post.author_id()).map(|a| a.name.as_str());
+            assert!(original.is_some());
+            assert_eq!(original, read_back);
+        }
+    }
+
+    #[test]
+    fn shrinking_dialogue_leaves_no_stale_tail() {
+        let big = big_dialogue();
+        let mut small = Dialogue::new("shrunk");
+        small.post_add("alice", 2_000_000, "just one short post", None, None).unwrap();
+
+        // demonstrate the hazard: rewriting a shorter archive in place, as a
+        // truncate-less key would, leaves the old tail bytes behind
+        let mut key = ChunkedKey::new();
+        let big_len = big.write_to(&mut key).unwrap();
+        key.rewind();
+        let small_len = small.write_to(&mut key).unwrap();
+        assert!(small_len < big_len);
+        assert_eq!(key.data.len(), big_len, "in-place rewrite keeps the stale tail");
+
+        // reading that record back must fail validation (the rkyv root at
+        // the tail is the old archive's), not deserialize as a Dialogue
+        key.rewind();
+        assert!(
+            Dialogue::read_from(&mut key).is_err(),
+            "stale-tail record must be rejected, not deserialized"
+        );
+
+        // the save path deletes and recreates the key instead
+        key.recreate();
+        let written = small.write_to(&mut key).unwrap();
+        assert_eq!(key.data.len(), written, "no stale tail may survive a shrinking rewrite");
+        key.rewind();
+        let restored = Dialogue::read_from(&mut key).unwrap();
+        assert_eq!(restored.posts_as_slice().len(), small.posts_as_slice().len());
+        assert_eq!(restored.posts_as_slice()[0].text(), small.posts_as_slice()[0].text());
+    }
+
+    #[test]
+    fn truncated_archive_is_an_error_not_ub() {
+        let dialogue = big_dialogue();
+        let mut key = ChunkedKey::new();
+        dialogue.write_to(&mut key).unwrap();
+        // a pre-fix save wrote at most one IPC buffer and dropped the rest
+        key.data.truncate(IPC_CAP);
+        key.rewind();
+        assert!(Dialogue::read_from(&mut key).is_err(), "truncated archive must be a handled error");
     }
 }

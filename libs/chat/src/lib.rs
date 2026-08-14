@@ -451,8 +451,19 @@ pub fn server(
             }),
             Some(ChatOp::DialogueSave) => {
                 log::info!("ChatOp::DialogueSave");
-                ui.dialogue_save().expect("failed to save Dialogue");
-                ui.dialogue_read().expect("failed to read Dialogue");
+                // a save or read-back failure must not panic the chat
+                // server. On failure the in-memory Dialogue is kept as the
+                // working copy so the next DialogueSave retries the write;
+                // the re-read is skipped after a failed save because the
+                // stored record is not trustworthy at that point.
+                match ui.dialogue_save() {
+                    Ok(()) => {
+                        if let Err(e) = ui.dialogue_read() {
+                            log::warn!("failed to read back Dialogue after save: {e}");
+                        }
+                    }
+                    Err(e) => log::warn!("failed to save Dialogue, keeping in-memory copy: {e}"),
+                }
                 if allow_redraw {
                     ui.redraw().expect("CHAT couldn't redraw");
                 }

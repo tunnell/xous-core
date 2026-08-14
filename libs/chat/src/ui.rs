@@ -1,6 +1,6 @@
 use std::cmp::min;
 use std::fmt::Write as TextWrite;
-use std::io::{Error, ErrorKind, Read, Write};
+use std::io::{Error, ErrorKind};
 
 use blitstr2::GlyphStyle;
 use dialogue::{Dialogue, post::Post};
@@ -191,43 +191,32 @@ impl Ui {
         match (&self.pddb_dict, &self.pddb_key) {
             (Some(dict), Some(key)) => {
                 match self.pddb.get(&dict, &key, None, true, false, None, None::<fn()>) {
-                    Ok(mut pddb_key) => {
-                        let mut bytes = [0u8; dialogue::MAX_BYTES + 2];
-                        match pddb_key.read(&mut bytes) {
-                            Ok(pos) => {
-                                let archive = unsafe {
-                                    rkyv::access_unchecked::<dialogue::ArchivedDialogue>(&bytes[..pos])
-                                };
-                                self.dialogue =
-                                    match rkyv::deserialize::<Dialogue, rkyv::rancor::Error>(archive) {
-                                        Ok(dialogue) => {
-                                            // show most recent posts onscreen
-                                            self.layout_selected = dialogue.post_last();
-                                            self.layout_range.clear();
-                                            self.layout_topdown = false;
-                                            Some(dialogue)
-                                        }
-                                        Err(e) => {
-                                            log::warn!(
-                                                "failed to deserialize Dialogue {}:{} {}",
-                                                dict,
-                                                key,
-                                                e
-                                            );
-                                            None
-                                        }
-                                    };
-                                log::debug!("get '{}' = '{:?}'", key, self.dialogue);
-                            }
-                            Err(e) => log::warn!("failed to read {}: {e}", key),
+                    Ok(mut pddb_key) => match Dialogue::read_from(&mut pddb_key) {
+                        Ok(dialogue) => {
+                            // show most recent posts onscreen
+                            self.layout_selected = dialogue.post_last();
+                            self.layout_range.clear();
+                            self.layout_topdown = false;
+                            log::debug!("get '{}' = '{:?}'", key, dialogue);
+                            self.dialogue = Some(dialogue);
+                            Ok(())
                         }
-                    }
+                        Err(e) => {
+                            // a truncated or corrupt archive fails bytecheck
+                            // validation and lands here. The in-memory
+                            // Dialogue is left untouched: after a failed save
+                            // it is the only good copy, and dialogue_set
+                            // replaces it anyway when it recovers a bad
+                            // record with a fresh Dialogue on this Err.
+                            log::warn!("failed to read Dialogue {}:{} {}", dict, key, e);
+                            Err(e)
+                        }
+                    },
                     Err(e) => {
                         log::warn!("failed to get {}: {e}", key);
-                        return Err(Error::new(ErrorKind::InvalidData, "missing"));
+                        Err(Error::new(ErrorKind::InvalidData, "missing"))
                     }
                 }
-                Ok(())
             }
             _ => {
                 log::warn!("missing pddb dict or key");
@@ -240,23 +229,39 @@ impl Ui {
     pub fn dialogue_save(&self) -> Result<(), Error> {
         match (&self.dialogue, &self.pddb_dict, &self.pddb_key) {
             (Some(dialogue), Some(dict), Some(key)) => {
+                // PddbKey has no truncate, so overwriting a longer record in
+                // place would leave stale bytes from the old archive past the
+                // end of the new one. Delete and recreate the key so the
+                // stored length always matches the archive length. If the
+                // delete fails the save is abandoned: writing a shorter
+                // archive over a surviving longer record is exactly the
+                // stale-tail corruption this path exists to prevent.
+                match self.pddb.delete_key(dict, key, None) {
+                    Ok(()) => (),
+                    Err(e) if e.kind() == ErrorKind::NotFound => (),
+                    Err(e) => {
+                        log::warn!("failed to delete {}:{} before rewrite: {e}", dict, key);
+                        return Err(e);
+                    }
+                }
                 let hint = Some(dialogue::MAX_BYTES + 2);
                 match self.pddb.get(&dict, &key, None, true, true, hint, None::<fn()>) {
-                    Ok(mut pddb_key) => {
-                        let bytes = rkyv::to_bytes::<rkyv::rancor::Error>(dialogue).unwrap();
-                        match pddb_key.write(&bytes) {
-                            Ok(len) => {
-                                self.pddb.sync().ok();
-                                log::info!("Wrote {} bytes to {}:{}", len, dict, key);
-                            }
-                            Err(e) => {
-                                log::warn!("Error writing {}:{}: {:?}", dict, key, e);
-                            }
+                    Ok(mut pddb_key) => match dialogue.write_to(&mut pddb_key) {
+                        Ok(len) => {
+                            self.pddb.sync().ok();
+                            log::info!("Wrote {} bytes to {}:{}", len, dict, key);
+                            Ok(())
                         }
+                        Err(e) => {
+                            log::warn!("Error writing {}:{}: {:?}", dict, key, e);
+                            Err(e)
+                        }
+                    },
+                    Err(e) => {
+                        log::warn!("failed to create {}:{}\n{}", dict, key, e);
+                        Err(e)
                     }
-                    Err(e) => log::warn!("failed to create {}:{}\n{}", dict, key, e),
                 }
-                Ok(())
             }
             _ => {
                 log::warn!("missing dict, key or dialogue");

@@ -81,6 +81,18 @@ impl Dialogue {
                 let mut new = Post::new(
                     author_id, timestamp, text, None, // TODO implement
                 );
+                // compute the bounds for the post if visual properties are
+                // specified. This must happen before the empty-dialogue
+                // early return below, so the first post of a Dialogue
+                // carries a bounding box like every later one instead
+                // of entering with None.
+                if let Some((vp, gam)) = vp {
+                    let mut layout_bubble = default_textview(&new, false, vp);
+                    log::debug!("Computing bounds on {:?}", layout_bubble);
+                    if gam.bounds_compute_textview(&mut layout_bubble).is_ok() {
+                        new.bounding_box = layout_bubble.bounds_computed;
+                    }
+                }
                 if self.posts.len() == 0 {
                     self.posts.push(new);
                     return Ok(());
@@ -89,15 +101,6 @@ impl Dialogue {
                 let first_ts = self.posts.first().map_or(0, |p| p.timestamp());
                 let last_ts = self.posts.last().map_or(0, |p| p.timestamp());
                 log::trace!("{:?}", new);
-
-                // compute the bounds for the post if visual properties are specified
-                if let Some((vp, gam)) = vp {
-                    let mut layout_bubble = default_textview(&new, false, vp);
-                    log::debug!("Computing bounds on {:?}", layout_bubble);
-                    if gam.bounds_compute_textview(&mut layout_bubble).is_ok() {
-                        new.bounding_box = layout_bubble.bounds_computed;
-                    }
-                }
 
                 if new_ts > last_ts {
                     log::info!("insert new post at end");

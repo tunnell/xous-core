@@ -269,6 +269,13 @@ impl Ui {
     pub fn dialogue_set(&mut self, pddb_dict: &str, pddb_key: Option<&str>) {
         self.pddb_dict = Some(pddb_dict.to_string());
         self.pddb_key = pddb_key.map(|key| key.to_string());
+        // A dialogue switch is a new view: drop the selection and layout
+        // range of the previous dialogue. Stale indices from another
+        // conversation otherwise pass the layout consistency check and
+        // suppress the range recompute (and its lazy bounding-box fill)
+        // against the new post list.
+        self.layout_selected = None;
+        self.layout_range.clear();
         if self.pddb_key.is_none() {
             self.dialogue_modal();
         }
@@ -736,7 +743,16 @@ impl Ui {
                 // double check the actual bounds against expected bounds
                 match bubble_tv.bounds_computed {
                     Some(actual_r) => {
-                        let expected_r = post.bounding_box.expect("bb should be computed by now");
+                        // A missing precomputed box is a layout cache miss,
+                        // not a reason to take down the chat server; fall
+                        // back to the just-drawn bounds and say so.
+                        let expected_r = post.bounding_box.unwrap_or_else(|| {
+                            log::warn!(
+                                "post {} had no precomputed bounding box; using drawn bounds",
+                                post_index
+                            );
+                            actual_r
+                        });
                         if expected_r.height() != actual_r.height() {
                             log::warn!(
                                 "Height mismatch of drawn versus pre-computed text (expected {}, got {}) for {}",

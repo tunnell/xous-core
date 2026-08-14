@@ -396,4 +396,47 @@ mod tests {
         key.rewind();
         assert!(Dialogue::read_from(&mut key).is_err(), "truncated archive must be a handled error");
     }
+
+    // The three tests below cover the post_add sorted-insert scan: a repost
+    // of the newest post must replace in place (the send-status repaint
+    // case), a new author at the end of an equal-timestamp run must be
+    // appended, and a mid-run replacement must write the matched index, not
+    // the scan start.
+
+    #[test]
+    fn repost_of_newest_post_replaces_in_place() {
+        let mut dialogue = Dialogue::new("repost");
+        dialogue.post_add("alice", 1, "one", None, None).unwrap();
+        dialogue.post_add("bob", 2, "two", None, None).unwrap();
+        dialogue.post_add("alice", 3, "pending", None, None).unwrap();
+
+        dialogue.post_add("alice", 3, "delivered", None, None).unwrap();
+        assert_eq!(dialogue.posts_as_slice().len(), 3, "a repost must replace, not insert or drop");
+        assert_eq!(dialogue.posts_as_slice()[2].text(), "delivered");
+    }
+
+    #[test]
+    fn equal_timestamp_run_appends_unmatched_author() {
+        let mut dialogue = Dialogue::new("equal-run");
+        dialogue.post_add("alice", 1, "one", None, None).unwrap();
+        dialogue.post_add("bob", 2, "two", None, None).unwrap();
+
+        dialogue.post_add("carol", 2, "also two", None, None).unwrap();
+        assert_eq!(dialogue.posts_as_slice().len(), 3, "an unmatched author must be appended, not dropped");
+        assert_eq!(dialogue.posts_as_slice()[2].text(), "also two");
+    }
+
+    #[test]
+    fn replacement_mid_equal_run_hits_the_matching_index() {
+        let mut dialogue = Dialogue::new("mid-run");
+        dialogue.post_add("alice", 1, "one", None, None).unwrap();
+        dialogue.post_add("alice", 2, "alice two", None, None).unwrap();
+        dialogue.post_add("bob", 2, "bob two", None, None).unwrap();
+        dialogue.post_add("carol", 3, "three", None, None).unwrap();
+
+        dialogue.post_add("bob", 2, "bob revised", None, None).unwrap();
+        assert_eq!(dialogue.posts_as_slice().len(), 4);
+        assert_eq!(dialogue.posts_as_slice()[1].text(), "alice two", "the scan-start post must survive");
+        assert_eq!(dialogue.posts_as_slice()[2].text(), "bob revised", "the matched post must be replaced");
+    }
 }

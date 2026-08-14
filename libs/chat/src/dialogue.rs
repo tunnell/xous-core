@@ -7,11 +7,13 @@ use std::collections::HashMap;
 use std::io::{Error, ErrorKind};
 
 use author::Author;
+use enumset::EnumSet;
 use gam::Gam;
 use post::Post;
 use rkyv::{Archive, Deserialize, Serialize};
 
 use crate::ui::VisualProperties;
+use crate::api::AuthorFlag;
 use crate::{default_textview, now};
 
 // TODO do better than just allocate lots!
@@ -192,6 +194,20 @@ impl Dialogue {
     ///
     /// * `id` - the index of the required Author
     pub fn author(&self, id: u16) -> Option<&Author> { self.authors.get(&id) }
+
+    /// Set the flags on an Author by name (the Author is added if new)
+    ///
+    /// # Arguments
+    ///
+    /// * `name` - the (external) name of the Author
+    /// * `flags` - the AuthorFlag set
+    pub fn author_flags_set(&mut self, name: &str, flags: EnumSet<AuthorFlag>) {
+        if let Some(id) = self.author_id(name) {
+            if let Some(author) = self.authors.get_mut(&id) {
+                author.flags_set(flags);
+            }
+        }
+    }
 
     /// Return Some<author_id> by Author name, or None.
     ///

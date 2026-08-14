@@ -83,11 +83,8 @@ impl Dialogue {
                 let mut new = Post::new(
                     author_id, timestamp, text, None, // TODO implement
                 );
-                // compute the bounds for the post if visual properties are
-                // specified. This must happen before the empty-dialogue
-                // early return below, so the first post of a Dialogue
-                // carries a bounding box like every later one instead
-                // of entering with None.
+                // compute the bounds for the post if visual properties are specified. This must
+                // precede the empty-dialogue early return so the first post also gets a bounding box.
                 if let Some((vp, gam)) = vp {
                     let mut layout_bubble = default_textview(&new, false, vp);
                     log::debug!("Computing bounds on {:?}", layout_bubble);
@@ -112,10 +109,9 @@ impl Dialogue {
                     self.posts.insert(0, new);
                 } else {
                     // insert a new post in the correct position
-                    // OR replace an existing post with matching timestamp & author.
-                    // The scan must include the last index: a repost of the
-                    // newest post (a send-status update) lands exactly there,
-                    // and the old i..last bound silently dropped it.
+                    // OR replace an existing post with matching timestamp & author. The scan must
+                    // include the last index: a repost of the newest post (a send-status update)
+                    // lands exactly there.
                     let i = self.posts.partition_point(|p| p.timestamp() < new_ts);
                     let mut new = Some(new);
                     for n in i..self.posts.len() {
@@ -132,8 +128,7 @@ impl Dialogue {
                         }
                     }
                     if let Some(p) = new {
-                        // an equal-timestamp run reached the end without a
-                        // matching author; the post still belongs in the list
+                        // an equal-timestamp run ended without an author match; the post still belongs
                         self.posts.push(p);
                     }
                 }

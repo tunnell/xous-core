@@ -75,7 +75,12 @@ byteorder = "1.4.3" # used by keywrap
 hex = { version = "0.4.3", default-features = false, features = [] }
 
 [dependencies.curve25519-dalek]
-version = "=4.1.2"                           # note this is patched to our fork in ./Cargo.toml
+# Caret instead of =4.1.2: still satisfied by the betrusted fork
+# (4.1.2, patched in ./Cargo.toml) when building inside this
+# workspace, and also by an out-of-tree workspace whose dalek patch
+# carries the same fork rebased at 4.1.3 (the sigchat/xas workspace
+# does this to share one dalek between root-keys and libsignal).
+version = "4.1.2"                            # note this is patched to our fork in ./Cargo.toml
 default-features = false
 features = ["auto-release", "warn-fallback"]
 

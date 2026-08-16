@@ -46,6 +46,14 @@ pub enum ChatOp {
     SetStatusIdleText,
     /// Set the four icontray slot labels
     SetIcontrayLabels,
+    /// Opt in/out of the IMEF's menu mode for this app's context.
+    /// In menu mode F1-F4 and the arrows come back as control strings
+    /// on the input line (which the Chat UI drops) instead of being
+    /// spliced into the compose line as predictions. Named to avoid
+    /// the unrelated app-side Ui::set_menu_mode (left/right menus).
+    SetImefMenuMode,
+    /// Set the glyph style and framing of Dialogue posts
+    SetPostStyle,
     /// Update just the state of the busy animation, if any. Internal opcode.
     /// Will skip the update if called too often.
     UpdateBusy,
@@ -53,6 +61,11 @@ pub enum ChatOp {
     UpdateBusyForced,
     /// exit the application
     Quit,
+    /// Add a new Post carrying optional author chrome (a Bold line
+    /// drawn above the bubble, outside its border). Opt-in: apps that
+    /// never send this are unaffected. Appended after Quit so the
+    /// existing opcode numbering is untouched.
+    PostAddWithHeader,
 }
 
 #[derive(Debug, num_derive::FromPrimitive, num_derive::ToPrimitive)]
@@ -96,12 +109,49 @@ pub struct IcontrayLabels {
 }
 
 #[derive(Archive, Serialize, Deserialize, Debug)]
+pub struct PostStyle {
+    pub style: u32, // GlyphStyle discriminant (blitstr2 implements From<usize>)
+    pub bubbles: bool,
+}
+
+#[derive(Archive, Serialize, Deserialize, Debug)]
 pub struct Post {
     pub dialogue_id: String,
     pub author: String,
     pub timestamp: u64,
     pub text: String,
     pub attach_url: Option<String>,
+}
+
+/// Transient IPC form of a Post that carries optional author chrome
+/// (ISSUES r5 row 15) and, since ISSUES r6, an optional footer and a
+/// centered-boxless-row flag (rows 20/21/22). A separate struct
+/// rather than new fields on [`Post`], because existing apps
+/// construct `Post` as a struct literal (apps/mtxchat/src/listen.rs)
+/// and must keep compiling untouched; only apps that opt in via
+/// `Chat::post_add_with_header` / `Chat::post_add_full` build one of
+/// these. Extended in place rather than adding a second transient
+/// struct and opcode, per the R5 precedent this struct itself set.
+#[derive(Archive, Serialize, Deserialize, Debug)]
+pub struct PostWithHeader {
+    pub dialogue_id: String,
+    pub author: String,
+    pub timestamp: u64,
+    pub text: String,
+    pub attach_url: Option<String>,
+    /// Chrome drawn above the bubble in `GlyphStyle::Bold`, outside
+    /// the bubble border. Never derived from `text`.
+    pub header: Option<String>,
+    /// Chrome drawn below the bubble in `GlyphStyle::Regular`, outside
+    /// the bubble border, aligned to the same side as the bubble
+    /// (ISSUES r6 row 20). Never derived from `text`.
+    pub footer: Option<String>,
+    /// True for a centered, borderless, box-free system row (a date
+    /// separator or the message-request instruction bar; ISSUES r6
+    /// rows 21/22) instead of an ordinary left/right bubble. Ignored
+    /// together with `header`/`footer`, which a centered row does not
+    /// carry.
+    pub center: bool,
 }
 
 /// Events are sent to the Chat App when key things occur in the Chat UI

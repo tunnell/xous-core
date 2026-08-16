@@ -358,7 +358,11 @@ impl Typesetter {
                         }
                     }
                 }
-            } else if ch.is_whitespace() && (ch != '\t') {
+            } else if ch.is_whitespace() && (ch != '\t') && (ch != '\u{a0}') {
+                // U+00A0 no-break space is excluded above so it takes the glyph
+                // path: it must neither wrap nor collapse at line starts, which
+                // the space handling below cannot honor. Every font carries a
+                // blank glyph for it.
                 if self.candidate.gs.len() > 0 {
                     // this test is here in case we have multiple spaces or newlines in a row
                     self.commit_candidate_word(&mut composition);

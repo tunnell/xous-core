@@ -9,8 +9,8 @@ use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub use api::*;
+pub use blitstr2::GlyphStyle;
 pub use enumset::EnumSet;
-use blitstr2::GlyphStyle;
 use gam::MenuItem;
 use num_traits::FromPrimitive;
 pub use ui::BUSY_ANIMATION_RATE_MS;
@@ -19,33 +19,215 @@ use ux_api::minigfx::*;
 use xous::{CID, Error, SID, msg_scalar_unpack};
 use xous_ipc::Buffer;
 
+/// The horizontal span a centered system row (a date separator or the
+/// message-request instruction bar; ISSUES r6 rows 21/22) is centered
+/// within: the full canvas width less one margin per side, wider than
+/// an ordinary bubble's 80% column so a multi-line notice has room.
+fn center_span(vp: &VisualProperties) -> (isize, isize) {
+    (vp.margin.x, vp.total_screensize.x - vp.margin.x)
+}
+
+/// The `TextBounds` for a centered system row, using the
+/// `CenteredTop`/`CenteredBot` variants the wider ux-api framework
+/// already implements (services/gam modals, apps/vault) for exactly
+/// this: the gfx handler measures the composed text and centers it
+/// horizontally within the given rectangle
+/// (libs/ux-api/src/minigfx/handlers.rs). libs/chat had not used
+/// either variant before this change; every other row here still
+/// anchors via the `Growable*` family. `topdown` and `anchor_y` follow
+/// the same convention `bubble`/`header_bubble` use: topdown anchors
+/// the top edge and grows down, otherwise the bottom edge is anchored
+/// and growth is up. The height bound is generous (a full screen's
+/// worth) because these rows are always short; it never binds.
+fn centered_bounds(vp: &VisualProperties, topdown: bool, anchor_y: isize) -> TextBounds {
+    let (x0, x1) = center_span(vp);
+    if topdown {
+        TextBounds::CenteredTop(Rectangle::new(
+            Point::new(x0, anchor_y),
+            Point::new(x1, anchor_y + vp.layout_screensize.y),
+        ))
+    } else {
+        TextBounds::CenteredBot(Rectangle::new(
+            Point::new(x0, anchor_y - vp.layout_screensize.y),
+            Point::new(x1, anchor_y),
+        ))
+    }
+}
+
 /// Create a TextView with the default properties common to all text bubbles.
+/// A centered post (`post.center()`, ISSUES r6 rows 21/22) is rendered
+/// borderless and box-free regardless of `vp.bubbles`, matching the
+/// non-bubble surfaces' own rule that a border appears only as the
+/// selection cursor.
 pub(crate) fn default_textview(
     post: &crate::dialogue::post::Post,
     hilite: bool,
     vp: &VisualProperties,
 ) -> TextView {
     use std::fmt::Write;
-    let mut bubble_tv = TextView::new(
-        vp.canvas,
-        TextBounds::GrowableFromBl(Point::new(vp.margin.x, vp.layout_screensize.y), vp.bubble_width),
-    );
-    if hilite {
-        bubble_tv.border_width = 3;
+    let bounds_hint = if post.center() {
+        // The real x-position is computed at draw time from anchor_y
+        // (see `bubble`); this placeholder is only for the
+        // insert-time and layout-measure bounds_compute_textview
+        // calls, which need the same width to get a consistent
+        // height, but do not care about the y position.
+        centered_bounds(vp, true, vp.status_height as isize + vp.margin.y)
     } else {
-        bubble_tv.border_width = 1;
+        TextBounds::GrowableFromBl(Point::new(vp.margin.x, vp.layout_screensize.y), vp.bubble_width)
+    };
+    let mut bubble_tv = TextView::new(vp.canvas, bounds_hint);
+    // A centered row is treated as a non-bubble row for framing
+    // purposes (bordered only when selected), whatever vp.bubbles is.
+    let bordered = vp.bubbles && !post.center();
+    if bordered {
+        bubble_tv.border_width = if hilite { 3 } else { 1 };
+    } else {
+        // plain rows carry no frame; a border appears only as the selection cursor
+        bubble_tv.border_width = 2;
     }
     bubble_tv.clip_rect =
         Some(Rectangle::new(Point::new(0, vp.status_height as isize + vp.margin.y), vp.layout_screensize));
-    bubble_tv.draw_border = true;
+    bubble_tv.draw_border = bordered || hilite;
     bubble_tv.clear_area = true;
-    bubble_tv.rounded_border = Some(vp.bubble_radius);
-    bubble_tv.style = GlyphStyle::Regular;
+    bubble_tv.rounded_border = if bordered { Some(vp.bubble_radius) } else { None };
+    bubble_tv.style = vp.style;
     bubble_tv.margin = vp.bubble_margin;
     bubble_tv.ellipsis = false;
     bubble_tv.insertion = None;
     write!(bubble_tv.text, "{}", post.text()).expect("couldn't write history text to TextView");
     bubble_tv
+}
+
+/// The chrome line above a bubble: Bold, no border, no rounding,
+/// one bubble-margin of x-indent. Returns None unless this surface
+/// draws bubbles, because a borderless full-width row (boot log,
+/// overview) has no border for the header to sit outside of, and the
+/// anti-spoof property is the border
+/// (ignore/notes-r5-author-identity.md section 4): body glyphs are
+/// clipped inside the bubble border, the header is drawn outside it,
+/// so no body string can render where the header renders.
+pub(crate) fn header_textview(
+    post: &crate::dialogue::post::Post,
+    vp: &VisualProperties,
+) -> Option<TextView> {
+    use std::fmt::Write;
+    if !crate::ui::header_wanted(vp.bubbles, post.header()) {
+        return None;
+    }
+    let header = post.header()?;
+    let mut tv = TextView::new(
+        vp.canvas,
+        TextBounds::GrowableFromBl(Point::new(vp.margin.x, vp.layout_screensize.y), vp.bubble_width),
+    );
+    tv.style = GlyphStyle::Bold;
+    tv.draw_border = false;
+    tv.border_width = 0;
+    tv.rounded_border = None;
+    tv.clear_area = true;
+    tv.margin = Point::new(vp.bubble_margin.x, 0);
+    tv.ellipsis = true;
+    tv.insertion = None;
+    tv.clip_rect =
+        Some(Rectangle::new(Point::new(0, vp.status_height as isize + vp.margin.y), vp.layout_screensize));
+    write!(tv.text, "{}", header).ok();
+    Some(tv)
+}
+
+/// Position a header TextView the way `bubble` positions the body:
+/// the anchor corner follows the layout direction and the author's
+/// Right flag. In practice only the left cases run today (only
+/// incoming rows carry a header), but both sides are written.
+pub(crate) fn header_bubble(
+    vp: &VisualProperties,
+    topdown: bool,
+    post: &crate::dialogue::post::Post,
+    dialogue: &crate::dialogue::Dialogue,
+    anchor_y: isize,
+) -> Option<TextView> {
+    let mut tv = header_textview(post, vp)?;
+    let mut align_right = false;
+    let mut anchor_x = vp.margin.x;
+    if let Some(author) = dialogue.author(post.author_id()) {
+        if author.flag_is(AuthorFlag::Right) {
+            align_right = true;
+            anchor_x = vp.layout_screensize.x - vp.margin.x;
+        }
+    }
+    let anchor = Point::new(anchor_x, anchor_y);
+    let width = vp.bubble_width;
+    tv.bounds_hint = match (topdown, align_right) {
+        (true, true) => TextBounds::GrowableFromTr(anchor, width),
+        (true, false) => TextBounds::GrowableFromTl(anchor, width),
+        (false, true) => TextBounds::GrowableFromBr(anchor, width),
+        (false, false) => TextBounds::GrowableFromBl(anchor, width),
+    };
+    Some(tv)
+}
+
+/// The chrome line below a bubble: Regular, no border, no rounding,
+/// one bubble-margin of x-indent, aligned to the same side as the
+/// bubble it belongs to (ISSUES r6 row 20). Mirrors `header_textview`
+/// exactly except for style and vertical placement; `GlyphStyle::
+/// Regular` rather than `Small` because the 16 px emoji glyph the
+/// delivery marks use sets the line height either way (16 px against
+/// 15 px Regular; a 12 px Small line would not shrink the row).
+/// Returns None on the same conditions as the header: no bubbles, or
+/// no footer string.
+pub(crate) fn footer_textview(
+    post: &crate::dialogue::post::Post,
+    vp: &VisualProperties,
+) -> Option<TextView> {
+    use std::fmt::Write;
+    if !crate::ui::footer_wanted(vp.bubbles, post.footer()) {
+        return None;
+    }
+    let footer = post.footer()?;
+    let mut tv = TextView::new(
+        vp.canvas,
+        TextBounds::GrowableFromBl(Point::new(vp.margin.x, vp.layout_screensize.y), vp.bubble_width),
+    );
+    tv.style = GlyphStyle::Regular;
+    tv.draw_border = false;
+    tv.border_width = 0;
+    tv.rounded_border = None;
+    tv.clear_area = true;
+    tv.margin = Point::new(vp.bubble_margin.x, 0);
+    tv.ellipsis = true;
+    tv.insertion = None;
+    tv.clip_rect =
+        Some(Rectangle::new(Point::new(0, vp.status_height as isize + vp.margin.y), vp.layout_screensize));
+    write!(tv.text, "{}", footer).ok();
+    Some(tv)
+}
+
+/// Position a footer TextView the way `header_bubble` positions the
+/// header: same anchor-corner rule (layout direction, author's Right
+/// flag), just below the bubble instead of above it.
+pub(crate) fn footer_bubble(
+    vp: &VisualProperties,
+    topdown: bool,
+    post: &crate::dialogue::post::Post,
+    dialogue: &crate::dialogue::Dialogue,
+    anchor_y: isize,
+) -> Option<TextView> {
+    let mut tv = footer_textview(post, vp)?;
+    let mut align_right = false;
+    let mut anchor_x = vp.margin.x;
+    if let Some(author) = dialogue.author(post.author_id()) {
+        if author.flag_is(AuthorFlag::Right) {
+            align_right = true;
+            anchor_x = vp.layout_screensize.x - vp.margin.x;
+        }
+    }
+    let anchor = Point::new(anchor_x, anchor_y);
+    let width = vp.bubble_width;
+    tv.bounds_hint = match (topdown, align_right) {
+        (true, true) => TextBounds::GrowableFromTr(anchor, width),
+        (true, false) => TextBounds::GrowableFromTl(anchor, width),
+        (false, true) => TextBounds::GrowableFromBr(anchor, width),
+        (false, false) => TextBounds::GrowableFromBl(anchor, width),
+    };
+    Some(tv)
 }
 
 /// Return a TextView bubble representing a Dialogue Post
@@ -68,6 +250,16 @@ fn bubble(
 ) -> TextView {
     // create a textview with all of our default properties
     let mut bubble_tv = default_textview(post, hilite, vp);
+
+    // A centered system row (ISSUES r6 rows 21/22) is the third case
+    // of the "measure the text, set the origin" machinery Right-align
+    // already established below: CenteredTop/CenteredBot measure the
+    // composed text and center it, so no author lookup or explicit
+    // width math is needed here.
+    if post.center() {
+        bubble_tv.bounds_hint = centered_bounds(vp, topdown, anchor_y);
+        return bubble_tv;
+    }
 
     // set alignment of bubble left/right
     let mut align_right = false;
@@ -238,20 +430,76 @@ impl Chat {
         text: &str,
         attach_url: Option<&str>,
     ) -> Result<(), Error> {
-        let mut post = api::Post {
+        self.post_add_with_header(author, timestamp, text, None, attach_url)
+    }
+
+    /// Add a new Post with author chrome: a Bold line drawn above the
+    /// bubble, outside its border (ISSUES r5 row 15). The header must
+    /// come from the app's authenticated identity data, never from the
+    /// message body; the Chat UI renders it in a separate TextView so
+    /// no body text can imitate it. `header == None` behaves exactly
+    /// like `post_add`.
+    ///
+    /// # Arguments
+    ///
+    /// * `author` - the name of the Author of the Post
+    /// * `timestamp` - the timestamp of the Post
+    /// * `text` - the text content of the Post
+    /// * `header` - optional chrome line drawn Bold above the bubble
+    /// * `attach_url` - a url of an attachment (image for example)
+    pub fn post_add_with_header(
+        &self,
+        author: &str,
+        timestamp: u64,
+        text: &str,
+        header: Option<&str>,
+        attach_url: Option<&str>,
+    ) -> Result<(), Error> {
+        self.post_add_full(author, timestamp, text, header, None, false, attach_url)
+    }
+
+    /// Add a new Post with the full set of optional chrome: a Bold
+    /// header line above the bubble, a Regular footer line below it
+    /// (ISSUES r6 row 20), or `center == true` for a centered,
+    /// borderless, box-free system row instead of a bubble at all
+    /// (ISSUES r6 rows 21/22, a date separator or the message-request
+    /// instruction bar). Header and footer must come from the app's
+    /// authenticated identity/state data, never from the message body;
+    /// the Chat UI renders each in a separate TextView so no body text
+    /// can imitate them. `header == None && footer == None && center
+    /// == false` behaves exactly like `post_add`.
+    ///
+    /// # Arguments
+    ///
+    /// * `author` - the name of the Author of the Post
+    /// * `timestamp` - the timestamp of the Post
+    /// * `text` - the text content of the Post
+    /// * `header` - optional chrome line drawn Bold above the bubble
+    /// * `footer` - optional chrome line drawn Regular below the bubble
+    /// * `center` - true for a centered, borderless, box-free row
+    /// * `attach_url` - a url of an attachment (image for example)
+    pub fn post_add_full(
+        &self,
+        author: &str,
+        timestamp: u64,
+        text: &str,
+        header: Option<&str>,
+        footer: Option<&str>,
+        center: bool,
+        attach_url: Option<&str>,
+    ) -> Result<(), Error> {
+        let post = api::PostWithHeader {
             dialogue_id: String::new(),
-            author: String::new(),
+            author: String::from(author),
             timestamp,
-            text: String::new(),
-            attach_url: match attach_url {
-                Some(url) => Some(String::from(url)),
-                None => None,
-            },
+            text: String::from(text),
+            attach_url: attach_url.map(String::from),
+            header: header.map(String::from),
+            footer: footer.map(String::from),
+            center,
         };
-        post.author.push_str(author);
-        post.text.push_str(text);
         match Buffer::into_buf(post) {
-            Ok(buf) => buf.send(self.cid, ChatOp::PostAdd as u32).map(|_| ()),
+            Ok(buf) => buf.send(self.cid, ChatOp::PostAddWithHeader as u32).map(|_| ()),
             Err(_) => Err(xous::Error::InternalError),
         }
     }
@@ -311,6 +559,43 @@ impl Chat {
         let il = IcontrayLabels { labels: labels.map(String::from) };
         match Buffer::into_buf(il) {
             Ok(buf) => buf.send(self.cid, ChatOp::SetIcontrayLabels as u32).map(|_| ()),
+            Err(_) => Err(xous::Error::InternalError),
+        }
+    }
+
+    /// Opt this app's GAM context in or out of the IMEF's menu mode.
+    ///
+    /// # Arguments
+    ///
+    /// * `on` - true: F1-F4 and the arrows arrive as control strings on the
+    ///   input line (dropped by the Chat UI; the app still sees F-keys via
+    ///   the rawkeys fanout) and nothing is spliced into the compose line.
+    ///   false (the default): F1-F4 insert the icontray slot label into the
+    ///   compose line and arrows move the insertion point (mtxchat behavior).
+    ///
+    /// Opt-in: apps that never call this are unaffected.
+    pub fn set_imef_menu_mode(&self, on: bool) -> Result<(), Error> {
+        xous::send_message(
+            self.cid,
+            xous::Message::new_scalar(ChatOp::SetImefMenuMode as usize, on as usize, 0, 0, 0),
+        )
+        .map(|_| ())
+    }
+
+    /// Set the glyph style and framing of Dialogue posts.
+    ///
+    /// # Arguments
+    ///
+    /// * `style` - glyph style for post text
+    /// * `bubbles` - true for the default look (bordered, rounded, 80%-width
+    ///   bubbles); false for full-width borderless rows with a border drawn
+    ///   only on the selected post
+    ///
+    /// Applies to the current and subsequent Dialogues.
+    pub fn set_post_style(&self, style: GlyphStyle, bubbles: bool) -> Result<(), Error> {
+        let ps = PostStyle { style: style as u32, bubbles };
+        match Buffer::into_buf(ps) {
+            Ok(buf) => buf.send(self.cid, ChatOp::SetPostStyle as u32).map(|_| ()),
             Err(_) => Err(xous::Error::InternalError),
         }
     }
@@ -458,6 +743,16 @@ pub fn server(
                 match buffer.to_original::<IcontrayLabels, _>() {
                     Ok(labels) => ui.set_icontray_labels(labels),
                     Err(e) => log::warn!("failed to deserialize IcontrayLabels: {:?}", e),
+                }
+            }
+            Some(ChatOp::SetImefMenuMode) => msg_scalar_unpack!(msg, on, _, _, _, {
+                ui.set_imef_menu_mode(on != 0);
+            }),
+            Some(ChatOp::SetPostStyle) => {
+                let buffer = unsafe { Buffer::from_memory_message(msg.body.memory_message().unwrap()) };
+                match buffer.to_original::<PostStyle, _>() {
+                    Ok(ps) => ui.set_post_style(ps),
+                    Err(e) => log::warn!("failed to deserialize PostStyle: {:?}", e),
                 }
             }
             Some(ChatOp::SetStatusIdleText) => {
@@ -622,6 +917,9 @@ pub fn server(
                                     post.author.as_str(),
                                     post.timestamp,
                                     post.text.as_str(),
+                                    None,
+                                    None,
+                                    false,
                                     None, // TODO implement
                                 )
                                 .unwrap(),
@@ -629,6 +927,31 @@ pub fn server(
                         }
                     }
                     None => log::warn!("failed to PostAdd with Dialogue == None"),
+                }
+            }
+            Some(ChatOp::PostAddWithHeader) => {
+                log::info!("ChatOp::PostAddWithHeader");
+                match dialogue_key {
+                    Some(ref dialogue_id) => {
+                        let buffer =
+                            unsafe { Buffer::from_memory_message(msg.body.memory_message().unwrap()) };
+                        match buffer.to_original::<api::PostWithHeader, _>() {
+                            Ok(post) => ui
+                                .post_add(
+                                    &dialogue_id,
+                                    post.author.as_str(),
+                                    post.timestamp,
+                                    post.text.as_str(),
+                                    post.header.as_deref(),
+                                    post.footer.as_deref(),
+                                    post.center,
+                                    None, // TODO implement attachments
+                                )
+                                .unwrap(),
+                            Err(e) => log::warn!("failed to deserialize PostWithHeader: {:?}", e),
+                        }
+                    }
+                    None => log::warn!("failed to PostAddWithHeader with Dialogue == None"),
                 }
             }
             Some(ChatOp::PostDel) => {

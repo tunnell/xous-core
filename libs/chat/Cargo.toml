@@ -38,3 +38,32 @@ rkyv = { version = "0.8.8", default-features = false, features = [
 
 [features]
 default = []
+# Forward the shared build-profile flags to blitstr2 (the emoji font
+# the delivery-mark glyphs need, ISSUES r6 row 20b) and ux-api,
+# mirroring the fan-out crates/sigchat/Cargo.toml already does for its
+# own direct blitstr2/ux-api dependencies. Nothing in a real app build
+# depends on this: sigchat activates blitstr2/hosted and ux-api/hosted
+# directly, not through this crate. Needed only so `cargo test -p
+# chat --features hosted` (ignore/notes-r5-author-identity.md section
+# 8) can select a feature set blitstr2 actually compiles under; its
+# own default (no font-table features at all) does not build.
+hosted = [
+    "blitstr2/hosted",
+    "ux-api/hosted",
+    "gam/hosted",
+    "modals/hosted",
+    "pddb/hosted",
+    "llio/hosted",
+    "com/hosted",
+    "codec/hosted",
+]
+precursor = [
+    "blitstr2/precursor",
+    "ux-api/precursor",
+    "gam/precursor",
+    "modals/precursor",
+    "pddb/precursor",
+    "llio/precursor",
+    "com/precursor",
+    "codec/precursor",
+]

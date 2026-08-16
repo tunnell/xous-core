@@ -14,7 +14,7 @@ use rkyv::{Archive, Deserialize, Serialize};
 
 use crate::ui::VisualProperties;
 use crate::api::AuthorFlag;
-use crate::{default_textview, now};
+use crate::{default_textview, footer_textview, header_textview, now};
 
 // TODO do better than just allocate lots!
 pub const MAX_BYTES: usize = 65536;
@@ -68,6 +68,10 @@ impl Dialogue {
     /// * `author` - the name of the Author of the Post
     /// * `timestamp` - the timestamp of the Post
     /// * `text` - the text content of the Post
+    /// * `header` - optional author chrome drawn Bold above the bubble, outside its border
+    /// * `footer` - optional chrome drawn Regular below the bubble, outside its border (ISSUES r6 row 20)
+    /// * `center` - true for a centered, borderless, box-free system row instead of a left/right bubble
+    ///   (ISSUES r6 rows 21/22); ignored together with `header`/`footer`, which a centered row does not carry
     /// * `attach_url` - a url of an attachment (image for example)
     /// * `vp` - the visual properties of the system - so that we can pre-compute the size extents of the post
     pub fn post_add(
@@ -75,13 +79,17 @@ impl Dialogue {
         author: &str,
         timestamp: u64,
         text: &str,
+        header: Option<&str>,
+        footer: Option<&str>,
+        center: bool,
         _attach_url: Option<&str>,
         vp: Option<(&VisualProperties, &Gam)>,
     ) -> Result<(), Error> {
         match self.author_id(author) {
             Some(author_id) => {
                 let mut new = Post::new(
-                    author_id, timestamp, text, None, // TODO implement
+                    author_id, timestamp, text, header, footer, center,
+                    None, // TODO implement attachments
                 );
                 // compute the bounds for the post if visual properties are specified. This must
                 // precede the empty-dialogue early return so the first post also gets a bounding box.
@@ -90,6 +98,19 @@ impl Dialogue {
                     log::debug!("Computing bounds on {:?}", layout_bubble);
                     if gam.bounds_compute_textview(&mut layout_bubble).is_ok() {
                         new.bounding_box = layout_bubble.bounds_computed;
+                    }
+                    // measure the header and footer chrome alongside the
+                    // body, so the insert-time cache covers the whole
+                    // stacked extent
+                    if let Some(mut header_tv) = header_textview(&new, vp) {
+                        if gam.bounds_compute_textview(&mut header_tv).is_ok() {
+                            new.header_box = header_tv.bounds_computed;
+                        }
+                    }
+                    if let Some(mut footer_tv) = footer_textview(&new, vp) {
+                        if gam.bounds_compute_textview(&mut footer_tv).is_ok() {
+                            new.footer_box = footer_tv.bounds_computed;
+                        }
                     }
                 }
                 if self.posts.len() == 0 {

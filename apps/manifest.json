@@ -98,11 +98,11 @@
         "context_name": "signal",
         "menu_name": {
             "appmenu.sigchat": {
-                "en": "Signal",
-                "en-tts": "Signal",
-                "fr": "Signal *EN*",
-                "ja": "Signal *EN*",
-                "zh": "Signal *EN*"
+                "en": "sigchat",
+                "en-tts": "sigchat",
+                "fr": "sigchat *EN*",
+                "ja": "sigchat *EN*",
+                "zh": "sigchat *EN*"
             }
         },
         "submenu": 1

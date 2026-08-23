@@ -29,20 +29,31 @@ fn read_locales() -> Translations {
 
     let project_dir = project_root();
     let build_directory = project_dir.to_str().unwrap();
-    let locales = format!("{}/**/i18n.json", build_directory);
-    build_debug!("Reading {}", &locales);
-    let paths = glob(&locales).expect("Failed to read glob pattern for in tree files");
-    for entry in paths {
-        let entry = entry.unwrap();
-        build_debug!("{:?}", entry);
-        println!("cargo:rerun-if-changed={}", entry.display());
-        let file = File::open(entry).expect("Failed to open the file");
-        let mut reader = std::io::BufReader::new(file);
-        let mut content = String::new();
-        reader.read_to_string(&mut content).expect("Failed to read the file");
-        let res: HashMap<String, HashMap<String, String>> =
-            serde_json::from_str(&content).expect("Cannot parse locale file");
-        translations.extend(res);
+    let mut patterns = vec![format!("{}/**/i18n.json", build_directory)];
+    // Out-of-tree apps. The sigchat repo pins this checkout at
+    // ../../../repos/xous-core through its path dependencies, so from here
+    // the app repo is always ../../sigchat; when it is absent these
+    // patterns simply match nothing. Fixed depth on purpose: the app repo
+    // carries its own (large) build directories that a ** walk would
+    // descend into. The second pattern covers a locales directory in each
+    // member crate, the convention README.md describes.
+    patterns.push(format!("{}/../../sigchat/locales/i18n.json", build_directory));
+    patterns.push(format!("{}/../../sigchat/crates/*/locales/i18n.json", build_directory));
+    for locales in patterns {
+        build_debug!("Reading {}", &locales);
+        let paths = glob(&locales).expect("Failed to read glob pattern for in tree files");
+        for entry in paths {
+            let entry = entry.unwrap();
+            build_debug!("{:?}", entry);
+            println!("cargo:rerun-if-changed={}", entry.display());
+            let file = File::open(entry).expect("Failed to open the file");
+            let mut reader = std::io::BufReader::new(file);
+            let mut content = String::new();
+            reader.read_to_string(&mut content).expect("Failed to read the file");
+            let res: HashMap<String, HashMap<String, String>> =
+                serde_json::from_str(&content).expect("Cannot parse locale file");
+            translations.extend(res);
+        }
     }
     translations
 }

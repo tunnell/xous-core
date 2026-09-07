@@ -3,6 +3,7 @@
 
 use core::cmp::Ordering;
 
+#[cfg(feature = "bao1x")]
 use bao1x_hal::udma::FLASH_SECTOR_LEN;
 use loader::SWAP_FLG_WIRED;
 use xous_kernel::SWAPPER_PID;
@@ -16,6 +17,11 @@ use crate::arch::current_pid;
 use crate::arch::mem::MMUFlags;
 use crate::mem::MemoryManager;
 use crate::services::SystemServices;
+
+/// Precursor's smallest flash erase, precursor-hal `SPINOR_ERASE_SIZE`. The kernel does not
+/// depend on precursor-hal, so the value is repeated rather than pulled in for one constant.
+#[cfg(not(feature = "bao1x"))]
+const FLASH_SECTOR_LEN: usize = 0x1000;
 
 /// This might change depending on the target, link options, and version of LLVM.
 /// The good news is it's static with every version, and constant after the first

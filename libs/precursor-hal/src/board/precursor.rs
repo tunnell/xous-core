@@ -35,6 +35,7 @@ pub const PDDB_LEN: u32 = 4096 * 1024; // shorter PDDB for faster testing
 pub const PDDB_LEN: u32 = EC_REGION_LOC - PDDB_LOC; // must be 64k-aligned (bulk erase block size) for proper function.
 
 pub const SPINOR_ERASE_SIZE: u32 = 0x1000;
+pub const SPINOR_BULK_ERASE_SIZE: u32 = 0x1_0000;
 
 // quantum alloted to each process before a context switch is forced
 // This is also platform-specific because it can be tuned based on CPU speed.

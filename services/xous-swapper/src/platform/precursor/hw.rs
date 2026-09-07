@@ -130,4 +130,9 @@ impl SwapHal {
     pub fn flash_read(&mut self, _buf: &mut [u8], _offset: usize) {
         // dummy
     }
+
+    pub fn block_erase(&mut self, _offset: usize, _len: usize) -> bool {
+        // dummy: on Precursor the PDDB erases through the spinor server, not the swapper
+        false
+    }
 }

@@ -369,7 +369,7 @@ pub fn allocate_swap(cfg: &mut BootConfig) {
     }
 }
 
-#[cfg(all(feature = "swap", feature = "bao1x"))]
+#[cfg(feature = "swap")]
 pub fn copy_args(cfg: &mut BootConfig, _detached_app: bool) {
     // With swap enabled, copy_args also merges the IniS arguments from the swap region into the kernel
     // arguments, and patches the length field accordingly.

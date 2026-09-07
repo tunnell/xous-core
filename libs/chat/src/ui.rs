@@ -783,11 +783,8 @@ impl Ui {
                         + self.vp.bubble_space as u32
                         + self.vp.bubble_margin.y as u32;
                     if total_height + next_height > self.vp.layout_screensize.y as u32 {
-                        if self.layout_topdown {
-                            self.layout_range = (starting_at..starting_at + i).collect();
-                        } else {
-                            self.layout_range = (starting_at - i..=starting_at).rev().collect();
-                        }
+                        // `i` posts have been measured to fit; this one did not
+                        self.layout_range = fitted_range(self.layout_topdown, starting_at, i);
                         break;
                     }
                     total_height += next_height;
@@ -1025,9 +1022,26 @@ pub(crate) fn footer_wanted(bubbles: bool, footer: Option<&str>) -> bool {
 /// Pure so the layout arithmetic is testable without a GAM.
 pub(crate) fn stacked_height(h_header: u32, h_body: u32, h_footer: u32) -> u32 { h_header + h_body + h_footer }
 
+/// The post indices to lay out: `fits` posts counting away from
+/// `starting_at`, down the list when laying out top-down and up it when
+/// laying out bottom-up. `fits` is how many posts were measured to fit,
+/// so the post that overflowed the screen is excluded either way. It is
+/// raised to one, because a post taller than the screen still has to be
+/// drawn and an empty range sends the caller into its "not enough
+/// elements" fallback, and capped at what the list holds. Pure so the
+/// arithmetic is testable without a GAM.
+pub(crate) fn fitted_range(topdown: bool, starting_at: usize, fits: usize) -> Vec<usize> {
+    if topdown {
+        (starting_at..starting_at + fits.max(1)).collect()
+    } else {
+        let fits = fits.clamp(1, starting_at + 1);
+        (starting_at + 1 - fits..=starting_at).rev().collect()
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{footer_wanted, header_wanted, imef_toggle_needed, stacked_height};
+    use super::{fitted_range, footer_wanted, header_wanted, imef_toggle_needed, stacked_height};
 
     #[test]
     fn imef_toggle_only_on_state_change() {
@@ -1082,5 +1096,25 @@ mod tests {
     fn stacked_height_sums_header_body_and_footer() {
         assert_eq!(stacked_height(15, 32, 16), 63);
         assert_eq!(stacked_height(0, 32, 0), 32, "no header or footer adds nothing");
+    }
+
+    #[test]
+    fn fitted_range_excludes_the_post_that_overflowed() {
+        // the hosted log's case: newest post at 8, seven of them measured
+        // to fit, so the range stops at 2 and never reaches 1
+        assert_eq!(fitted_range(false, 8, 7), vec![8, 7, 6, 5, 4, 3, 2]);
+        assert_eq!(fitted_range(true, 2, 7), vec![2, 3, 4, 5, 6, 7, 8]);
+    }
+
+    #[test]
+    fn fitted_range_keeps_a_post_taller_than_the_screen() {
+        assert_eq!(fitted_range(false, 8, 0), vec![8]);
+        assert_eq!(fitted_range(true, 8, 0), vec![8]);
+    }
+
+    #[test]
+    fn fitted_range_stays_inside_the_post_list() {
+        assert_eq!(fitted_range(false, 2, 9), vec![2, 1, 0]);
+        assert_eq!(fitted_range(false, 0, 0), vec![0]);
     }
 }

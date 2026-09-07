@@ -141,7 +141,7 @@ impl PredictionApi for PredictionPlugin {
         match self.connection {
             Some(cid) => {
                 let buf = Buffer::into_buf(s).or(Err(xous::Error::InternalError))?;
-                buf.lend(cid, Opcode::Input.to_u32().unwrap()).expect("|API: set_input operation failure");
+                buf.lend(cid, Opcode::Input.to_u32().unwrap())?;
                 Ok(())
             }
             _ => Err(xous::Error::UseBeforeInit),
@@ -152,8 +152,7 @@ impl PredictionApi for PredictionPlugin {
         match self.connection {
             Some(cid) => {
                 let buf = Buffer::into_buf(s).or(Err(xous::Error::InternalError))?;
-                buf.lend(cid, Opcode::Picked.to_u32().unwrap())
-                    .expect("|API: feedback_picked operation failure");
+                buf.lend(cid, Opcode::Picked.to_u32().unwrap())?;
                 Ok(())
             }
             _ => Err(xous::Error::UseBeforeInit),

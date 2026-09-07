@@ -108,11 +108,18 @@ impl InputTracker {
 
     pub fn set_predictor(&mut self, predictor: Option<PredictionPlugin>) {
         self.predictor = predictor;
-        if let Some(pred) = predictor {
-            self.pred_triggers = Some(
-                pred.get_prediction_triggers()
-                    .expect("InputTracker failed to get prediction triggers from plugin"),
-            );
+        match predictor {
+            Some(pred) => {
+                self.pred_triggers = Some(
+                    pred.get_prediction_triggers()
+                        .expect("InputTracker failed to get prediction triggers from plugin"),
+                );
+            }
+            // the triggers and the displayed predictions belonged to the predictor we just dropped
+            None => {
+                self.pred_triggers = None;
+                self.pred_options = Default::default();
+            }
         }
     }
 
@@ -126,9 +133,9 @@ impl InputTracker {
 
     pub fn clear_pred_canvas(&mut self) { self.pred_canvas = None }
 
-    pub fn is_init(&self) -> bool {
-        self.input_canvas.is_some() && self.pred_canvas.is_some() && self.predictor.is_some()
-    }
+    /// The predictor is deliberately not required here: input has to keep working
+    /// after the predictor's server disappears.
+    pub fn is_init(&self) -> bool { self.input_canvas.is_some() && self.pred_canvas.is_some() }
 
     pub fn activate_emoji(&self) {
         self.gam.raise_menu(gam::EMOJI_MENU_NAME).expect("couldn't activate emoji menu");
@@ -410,7 +417,7 @@ impl InputTracker {
 
                             if let Some(predictor) = self.predictor {
                                 if self.can_unpick {
-                                    predictor.unpick().expect("couldn't unpick last prediction");
+                                    predictor.unpick()?;
                                     self.can_unpick = false;
                                     update_predictor = true;
                                 }
@@ -478,15 +485,9 @@ impl InputTracker {
 
                         if let Some(trigger) = self.pred_triggers {
                             if trigger.newline {
-                                self.predictor
-                                    .unwrap()
-                                    .feedback_picked(String::from(&self.line))
-                                    .expect("couldn't send feedback to predictor");
+                                self.predictor.unwrap().feedback_picked(String::from(&self.line))?;
                             } else if trigger.punctuation {
-                                self.predictor
-                                    .unwrap()
-                                    .feedback_picked(String::from(&self.pred_phrase))
-                                    .expect("couldn't send feedback to predictor");
+                                self.predictor.unwrap().feedback_picked(String::from(&self.pred_phrase))?;
                             }
                         }
                         self.can_unpick = false;
@@ -529,8 +530,7 @@ impl InputTracker {
                                 if self.pred_phrase.len() > 0 {
                                     self.predictor
                                         .unwrap()
-                                        .feedback_picked(String::from(&self.pred_phrase))
-                                        .expect("couldn't send feedback to predictor");
+                                        .feedback_picked(String::from(&self.pred_phrase))?;
                                     self.pred_phrase.clear();
                                     self.can_unpick = true;
                                     update_predictor = true;
@@ -540,8 +540,7 @@ impl InputTracker {
                                 if self.pred_phrase.len() > 0 {
                                     self.predictor
                                         .unwrap()
-                                        .feedback_picked(String::from(&self.pred_phrase))
-                                        .expect("couldn't send feedback to predictor");
+                                        .feedback_picked(String::from(&self.pred_phrase))?;
                                     self.pred_phrase.clear();
                                     self.can_unpick = true;
                                     update_predictor = true;
@@ -697,18 +696,14 @@ impl InputTracker {
             if update_predictor {
                 if self.pred_phrase.len() > 0 || self.menu_mode {
                     if let Some(pred) = self.predictor {
-                        pred.set_input(String::from(&self.pred_phrase))
-                            .expect("couldn't update predictor with current input");
+                        pred.set_input(String::from(&self.pred_phrase))?;
                     }
                 }
 
                 // Query the prediction engine for the latest predictions
                 if let Some(pred) = self.predictor {
                     for i in 0..self.pred_options.len() {
-                        let p = if let Some(prediction) = pred
-                            .get_prediction(i as u32, api_token)
-                            .expect("couldn't query prediction engine")
-                        {
+                        let p = if let Some(prediction) = pred.get_prediction(i as u32, api_token)? {
                             Some(String::from(prediction.as_str()))
                         } else {
                             None
@@ -795,6 +790,18 @@ impl InputTracker {
         self.gam.redraw().expect("couldn't redraw screen");
 
         Ok(retstring)
+    }
+}
+
+/// The predictor server lives inside the application process, so it vanishes when
+/// that application quits. Forget it and redraw, so typing keeps working without
+/// predictions until the next application connects one.
+fn drop_predictor(tracker: &mut InputTracker, api_token: [u32; 4], e: xous::Error) {
+    log::warn!("predictor is gone ({:?}); continuing without predictions", e);
+    tracker.set_predictor(None);
+    tracker.predictor_conn = None;
+    if let Err(e) = tracker.update(['\u{0000}'; 4], true, api_token) {
+        log::error!("couldn't redraw after dropping the predictor: {:?}", e);
     }
 }
 
@@ -907,10 +914,15 @@ fn main() -> ! {
                         if keys[0] == '😊' {
                             tracker.activate_emoji();
                         } else {
-                            if let Some(line) = tracker
-                                .update(keys, false, api_token.as_ref().unwrap().api_token)
-                                .expect("couldn't update input tracker with latest key presses")
-                            {
+                            let at = api_token.as_ref().unwrap().api_token;
+                            let updated = match tracker.update(keys, false, at) {
+                                Ok(line) => line,
+                                Err(e) => {
+                                    drop_predictor(&mut tracker, at, e);
+                                    None
+                                }
+                            };
+                            if let Some(line) = updated {
                                 if dbglistener {
                                     info!("sending listeners {:?}", line);
                                 }
@@ -954,9 +966,10 @@ fn main() -> ! {
                 if tracker.is_init() && api_token.is_some() {
                     let force = if arg != 0 { true } else { false };
                     tracker.clear_area().expect("can't initially clear areas");
-                    tracker
-                        .update(['\u{0000}'; 4], force, api_token.as_ref().unwrap().api_token)
-                        .expect("can't setup initial screen arrangement");
+                    let at = api_token.as_ref().unwrap().api_token;
+                    if let Err(e) = tracker.update(['\u{0000}'; 4], force, at) {
+                        drop_predictor(&mut tracker, at, e);
+                    }
                 } else {
                     log::trace!("got redraw, but we're not initialized");
                     // ignore keyboard events until we've fully initialized

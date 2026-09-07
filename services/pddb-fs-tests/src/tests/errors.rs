@@ -151,11 +151,11 @@ pub fn dict_name_length_boundary() {
     check!(fs::remove_dir(&ok_name));
 
     // One byte over: must error cleanly (POSIX ENAMETOOLONG territory).
-    // XFAIL PFC-6: the client's `DirBuilder::mkdir` (rust fork
-    // sys/fs/xous.rs) never reads the server's reply retcode at all, so the
-    // server-side InternalError from `DictName::try_from_str` is swallowed
-    // and create_dir returns Ok. Same client bug as the already-exists case
-    // pinned by dirs::mkdir_path_already_exists_error.
+    // Was XFAIL PFC-6: the client's `DirBuilder::mkdir` (rust fork
+    // sys/fs/xous.rs) never read the server's reply retcode at all, so the
+    // server-side InternalError from `DictName::try_from_str` was swallowed
+    // and create_dir returned Ok; the 1.98.1.1 toolkit fixes that, here and
+    // in dirs::mkdir_path_already_exists_error.
     let over_res = fs::create_dir(&over_name);
     // Cleanup BEFORE the assert (a failing assert must not strand state):
     // `dict_add` inserts the dict into the in-memory basis cache and bumps
@@ -368,9 +368,6 @@ pub const TESTS: &[(&str, fn())] = &[
 ];
 
 pub const XFAILS: &[(&str, &str)] = &[
-    // create_dir swallows ALL server retcodes (fork mkdir never reads the
-    // reply), so the over-length name "succeeds" -- see the test's comment.
-    ("errors::dict_name_length_boundary", "PFC-6"),
     // rejected over-length key name poisons the dict's key cache -- see the
     // test's comment and PFC-8.
     ("errors::key_name_length_boundary", "PFC-8"),

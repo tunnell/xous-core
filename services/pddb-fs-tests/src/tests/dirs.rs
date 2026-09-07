@@ -217,11 +217,11 @@ pub fn unicode_path_exists() {
 }
 
 /// Port of `mkdir_path_already_exists_error`: POSIX mkdir semantics require
-/// `create_dir` on an existing path to fail. XFAIL PFC-6: the xous client's
-/// `create_dir` discards the server's error retcode and returns Ok even when
-/// the dict already exists (rust fork sys/fs/xous.rs ~444-448; contrast
-/// unlink/rmdir, which do check it). Never weaken
-/// this to `is_ok()` -- the correct behavior is `is_err()`.
+/// `create_dir` on an existing path to fail. Was XFAIL PFC-6, where the xous
+/// client's `create_dir` discarded the server's error retcode and returned Ok
+/// even when the dict already existed (rust fork sys/fs/xous.rs); the 1.98.1.1
+/// toolkit fixes that. Never weaken this to `is_ok()` -- the correct behavior
+/// is `is_err()`.
 pub fn mkdir_path_already_exists_error() {
     let tmp = TmpDict::new("mkdir_path_already_exists_error");
     let dir = format!("{}_twice", tmp.dict());
@@ -376,7 +376,6 @@ pub const TESTS: &[(&str, fn())] = &[
 ];
 
 pub const XFAILS: &[(&str, &str)] = &[
-    ("dirs::mkdir_path_already_exists_error", "PFC-6"),
     // read_dir on a missing dict returns Ok(empty) instead of an error --
     // see the test's doc comment and PFC-9.
     ("dirs::read_dir_not_found", "PFC-9"),

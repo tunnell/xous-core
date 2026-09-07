@@ -463,6 +463,44 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 builder.add_app(&app, LoaderRegion::Flash);
             }
         }
+        Some("app-image-swap") => {
+            // `app-image-xip`, but the image tool keeps 2 MiB of RAM and turns the next
+            // 4 MiB into swap. `renode-swap` bundles only a dozen services, so it cannot
+            // carry a full application image.
+            let swap_region = match get_flag("--swap-region")?.first().map(|r| r.to_ascii_lowercase()) {
+                None => LoaderRegion::Flash,
+                Some(r) if r == "ram" => LoaderRegion::Ram,
+                Some(r) if r == "flash" => LoaderRegion::Flash,
+                Some(r) if r == "swap" => LoaderRegion::Swap,
+                Some(r) => {
+                    return Err(format!("--swap-region must be ram, flash or swap, not {}", r).into());
+                }
+            };
+            // the swapper calls these to page anything out, so they may never be paged out
+            let resident_pkgs = ["xous-ticktimer", "xous-log", "xous-susres"];
+            if !builder.is_swap_set() {
+                builder.set_swap(0x4020_0000, 4 * 1024 * 1024);
+            }
+            builder.target_precursor(PRECURSOR_SOC_VERSION).add_feature("mass-storage");
+            builder.add_loader_feature("swap");
+            builder.add_loader_feature("resume");
+            builder.add_kernel_feature("swap");
+            builder.add_kernel_feature("debug-swap");
+            builder.add_feature("swap");
+            // It is important that this is the first service added, because the swapper *must* be in PID 2
+            builder.add_service("xous-swapper", LoaderRegion::Flash);
+            for service in user_pkgs {
+                if resident_pkgs.contains(&service) {
+                    builder.add_service(service, LoaderRegion::Flash);
+                } else {
+                    builder.add_service(service, swap_region);
+                }
+            }
+            for app in get_cratespecs() {
+                let (spec, region) = region_from_name(&app, swap_region);
+                builder.add_app(spec, region);
+            }
+        }
         Some("perf-image") => {
             // `--feature vaultperf` will make `vault` the performance manager, in exclusion of shellchat
             if !builder.has_feature("shellperf") && !builder.has_feature("vaultperf") {
@@ -987,6 +1025,8 @@ be merged in with explicit app/service treatment with the following flags:
 [--debug-loader]         Enable debug printing in the loader
 [--offline]              Avoid network traffic
 [--swap offset:size]     Specify a region for swap memory. The behavior of this depends on the target.
+[--swap-region region]   Where app-image-swap puts each service: ram, flash or swap. Defaults to flash.
+                         A cratespec may override it for one app, as in 'sigchat:/path/to/elf~swap'.
 [--change-target]        Used to clean the cached target/*/*/build/SVD_PATH when changing build targets.
                          This will also force a full rebuild every time the flag is specified.
 [--git-describe version] Force a git describe version string (e.g., 'v0.10.0-19-g0d934e1') instead of running `git describe --long`. For build systems that lack git state.
@@ -1004,6 +1044,7 @@ be merged in with explicit app/service treatment with the following flags:
 Hardware images:
  app-image-xip           Precursor user image with XIP (frees more RAM for apps). [cratespecs] are apps
  app-image               Precursor user image (all services in RAM). [cratespecs] are apps
+ app-image-swap          Precursor user image with 2 MiB of RAM and 4 MiB of swap. [cratespecs] are apps
  perf-image              Precursor user image, with performance profiling. [cratespecs] are apps
  tts                     builds an image with text to speech support via externally linked C executable. [cratespecs] are apps
  usbdev                  minimal, insecure build for new USB core bring-up. [cratespecs] are services

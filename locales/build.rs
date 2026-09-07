@@ -31,9 +31,22 @@ fn read_locales() -> Translations {
     let build_directory = project_dir.to_str().unwrap();
     let locales = format!("{}/**/i18n.json", build_directory);
     build_debug!("Reading {}", &locales);
-    let paths = glob(&locales).expect("Failed to read glob pattern for in tree files");
+    let mut paths: Vec<PathBuf> =
+        glob(&locales).expect("Failed to read glob pattern for in tree files").map(|e| e.unwrap()).collect();
+    // Out-of-tree locale roots, PATH-style separated, each scanned recursively
+    // like the in-tree scan. Unset or empty means in-tree only.
+    println!("cargo:rerun-if-env-changed=XOUS_EXTRA_LOCALES");
+    if let Ok(extra) = std::env::var("XOUS_EXTRA_LOCALES") {
+        for root in std::env::split_paths(&extra).filter(|p| !p.as_os_str().is_empty()) {
+            let pattern = format!("{}/**/i18n.json", root.display());
+            build_debug!("Reading external {}", &pattern);
+            println!("cargo:rerun-if-changed={}", root.display());
+            paths.extend(
+                glob(&pattern).expect("Failed to read glob pattern for external files").map(|e| e.unwrap()),
+            );
+        }
+    }
     for entry in paths {
-        let entry = entry.unwrap();
         build_debug!("{:?}", entry);
         println!("cargo:rerun-if-changed={}", entry.display());
         let file = File::open(entry).expect("Failed to open the file");

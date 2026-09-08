@@ -703,11 +703,6 @@ fn main() {
     let mut sss = Box::new(SharedStateStorage { inner: None });
     sss.init();
 
-    // init the log, but this is mostly unused.
-    log_server::init_wait().unwrap();
-    log::set_max_level(log::LevelFilter::Info);
-    log::info!("my PID is {}", xous::process::id());
-
     // wait for the share storage to become initialized, happens inside the handler
     // on the first call the kernel makes back. Usually it's done by now (by an alloc
     // advisory), but this check just ensures that happens.
@@ -732,6 +727,14 @@ fn main() {
     // restore the normal parameters
     sss.inner.as_mut().unwrap().report_full_rpt = false;
     sss.inner.as_mut().unwrap().pages_to_free = HARD_OOM_PAGE_TARGET + HARD_OOM_RESERVED_PAGES;
+
+    // The log is mostly unused, and `init_wait` blocks until the log server is up. On a
+    // small RAM split the first hard OOM can arrive before that, so the storage above has
+    // to exist first: a hard OOM with no heap panics inside the swap handler, where the
+    // panic cannot be reported and the swapper is lost.
+    log_server::init_wait().unwrap();
+    log::set_max_level(log::LevelFilter::Info);
+    log::info!("my PID is {}", xous::process::id());
 
     // This thread is for testing
     #[cfg(feature = "swap-userspace-testing")]

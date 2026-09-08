@@ -254,6 +254,7 @@ namespace Antmicro.Renode.Peripherals.Network.Betrusted
             CpuReset.Value = true;
             spiHeader = 0;
             pendingTxMessages.Clear();
+            arpOffloadAddresses.Clear();
             configurationOffset = 0;
         }
 
@@ -262,6 +263,10 @@ namespace Antmicro.Renode.Peripherals.Network.Betrusted
         public void ReceiveFrame(EthernetFrame frame)
         {
             if (!frame.DestinationMAC.IsBroadcast && frame.DestinationMAC != MAC)
+            {
+                return;
+            }
+            if (AnswerArpRequest(frame))
             {
                 return;
             }
@@ -294,6 +299,71 @@ namespace Antmicro.Renode.Peripherals.Network.Betrusted
 
             var receivedPacketMessage = new WfxMessage(WfxMessage.Ethernet.Received, frame_bytes);
             pendingTxMessages.Enqueue(receivedPacketMessage);
+        }
+
+        // The chip answers ARP requests for the addresses the host handed it
+        // through SetArpIpAddress and does not pass them up. The EC firmware
+        // relies on that and never answers itself, so without this nothing on
+        // the emulated device replies to "who has", and a peer stops being able
+        // to reach it as soon as its own neighbour entry expires.
+        private bool AnswerArpRequest(EthernetFrame frame)
+        {
+            var bytes = frame.Bytes;
+            if (arpOffloadAddresses.Count == 0 || bytes.Length < ArpFrameLength)
+            {
+                return false;
+            }
+            // ethertype ARP, over Ethernet, for IPv4, operation Request
+            if (bytes[12] != 0x08 || bytes[13] != 0x06
+                || bytes[14] != 0x00 || bytes[15] != 0x01
+                || bytes[16] != 0x08 || bytes[17] != 0x00
+                || bytes[18] != 6 || bytes[19] != 4
+                || bytes[20] != 0x00 || bytes[21] != 0x01)
+            {
+                return false;
+            }
+            var asked = false;
+            foreach (var address in arpOffloadAddresses)
+            {
+                if (address[0] == bytes[38] && address[1] == bytes[39]
+                    && address[2] == bytes[40] && address[3] == bytes[41])
+                {
+                    asked = true;
+                    break;
+                }
+            }
+            if (!asked)
+            {
+                return false;
+            }
+
+            var reply = new byte[ArpFrameLength];
+            Array.Copy(bytes, 22, reply, 0, 6);
+            Array.Copy(MAC.Bytes, 0, reply, 6, 6);
+            reply[12] = 0x08;
+            reply[13] = 0x06;
+            reply[14] = 0x00;
+            reply[15] = 0x01;
+            reply[16] = 0x08;
+            reply[17] = 0x00;
+            reply[18] = 6;
+            reply[19] = 4;
+            reply[20] = 0x00;
+            reply[21] = 0x02;
+            Array.Copy(MAC.Bytes, 0, reply, 22, 6);
+            Array.Copy(bytes, 38, reply, 28, 4);
+            Array.Copy(bytes, 22, reply, 32, 6);
+            Array.Copy(bytes, 28, reply, 38, 4);
+            if (!Misc.TryCreateFrameOrLogWarning(this, reply, out var replyFrame, addCrc: true))
+            {
+                return false;
+            }
+
+            var machine = this.GetMachine();
+            var ts = new TimeStamp(TimeInterval.FromMilliseconds(1) + machine.ElapsedVirtualTime.TimeElapsed,
+                                   machine.ElapsedVirtualTime.Domain);
+            machine.HandleTimeDomainEvent<EthernetFrame>(f => FrameReady?.Invoke(f), replyFrame, ts);
+            return true;
         }
 
         public byte Transmit(byte data)
@@ -794,6 +864,18 @@ namespace Antmicro.Renode.Peripherals.Network.Betrusted
             }
             else if (req == WfxMessage.Requests.SetArpIpAddress)
             {
+                // sl_wfx_set_arp_ip_address_req: one little-endian IPv4 address
+                // per slot, zero for an unused slot.
+                var offloaded = request.Payload();
+                arpOffloadAddresses.Clear();
+                for (var i = 0; i + 4 <= offloaded.Count; i += 4)
+                {
+                    if (offloaded[i] == 0 && offloaded[i + 1] == 0 && offloaded[i + 2] == 0 && offloaded[i + 3] == 0)
+                    {
+                        continue;
+                    }
+                    arpOffloadAddresses.Add(new byte[] { offloaded[i + 3], offloaded[i + 2], offloaded[i + 1], offloaded[i] });
+                }
                 var message = new WfxMessage(WfxMessage.Confirmations.SetArpIpAddress, okayResponse, configurationOffset);
                 // this.Log(LogLevel.Info, "Sending response for configuration message: {0}", message);
                 pendingTxMessages.Enqueue(message);
@@ -915,6 +997,8 @@ namespace Antmicro.Renode.Peripherals.Network.Betrusted
         private IFlagRegisterField CpuReset;
         private uint downloadOffset;
         private Queue<WfxMessage> pendingTxMessages;
+        private readonly List<byte[]> arpOffloadAddresses = new List<byte[]>();
+        private const int ArpFrameLength = 42;
 
         private enum Mode
         {

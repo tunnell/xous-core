@@ -168,18 +168,13 @@ pub fn dir_entry_methods() {
 /// the isolation rules, even though nothing is created here:
 /// `_missing` is never created, so the dict genuinely does not exist.
 ///
-/// XFAIL PFC-9: `fs::read_dir` on a nonexistent directory returns Ok with an
-/// EMPTY iterator instead of an error. The server's `list_path`
-/// (services/pddb/src/libstd/mod.rs ~184: "Ignore errors, since sometimes
-/// the dict doesn't exist" -- `key_list(...).unwrap_or_default()`) never
-/// reports a missing dict, and the client's `readdir` (rust fork
-/// sys/fs/xous.rs) has no retcode check either. POSIX requires ENOENT here;
-/// assert the error and expect the XFAIL until PFC-9 is fixed.
+/// POSIX requires ENOENT from `fs::read_dir` on a nonexistent directory;
+/// assert the error, never an empty iterator.
 pub fn read_dir_not_found() {
     let tmp = TmpDict::new("read_dir_not_found");
     let missing = format!("{}_missing", tmp.dict());
     let res = fs::read_dir(&missing);
-    let err = res.expect_err("read_dir on a nonexistent dict should error (PFC-9)");
+    let err = res.expect_err("read_dir on a nonexistent dict should error");
     log::info!("read_dir on nonexistent dict returned ErrorKind::{:?}", err.kind());
 }
 
@@ -217,17 +212,13 @@ pub fn unicode_path_exists() {
 }
 
 /// Port of `mkdir_path_already_exists_error`: POSIX mkdir semantics require
-/// `create_dir` on an existing path to fail. XFAIL PFC-6: the xous client's
-/// `create_dir` discards the server's error retcode and returns Ok even when
-/// the dict already exists (rust fork sys/fs/xous.rs ~444-448; contrast
-/// unlink/rmdir, which do check it). Never weaken
-/// this to `is_ok()` -- the correct behavior is `is_err()`.
+/// `create_dir` on an existing path to fail. Never weaken this to `is_ok()`.
 pub fn mkdir_path_already_exists_error() {
     let tmp = TmpDict::new("mkdir_path_already_exists_error");
     let dir = format!("{}_twice", tmp.dict());
     check!(fs::create_dir(&dir));
     let r = fs::create_dir(&dir);
-    assert!(r.is_err(), "create_dir on an already-existing dict must fail (PFC-6)");
+    assert!(r.is_err(), "create_dir on an already-existing dict must fail");
     check!(fs::remove_dir(&dir));
 }
 
@@ -375,9 +366,4 @@ pub const TESTS: &[(&str, fn())] = &[
     ("dirs::concurrent_recursive_mkdir", concurrent_recursive_mkdir as fn()),
 ];
 
-pub const XFAILS: &[(&str, &str)] = &[
-    ("dirs::mkdir_path_already_exists_error", "PFC-6"),
-    // read_dir on a missing dict returns Ok(empty) instead of an error --
-    // see the test's doc comment and PFC-9.
-    ("dirs::read_dir_not_found", "PFC-9"),
-];
+pub const XFAILS: &[(&str, &str)] = &[];

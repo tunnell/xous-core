@@ -64,13 +64,7 @@ pub fn create_existing_preserves_content_without_truncate() {
 }
 
 /// `create_new(true)` on a missing path creates it (correct std semantics:
-/// `create_new` implies creation, like O_CREAT|O_EXCL). XFAIL PFC-10,
-/// empirically confirmed on the Renode image 2026-07-07: the rust fork
-/// serializes `create_file` and `create_new` as independent booleans and never
-/// combines them, while the server's key-creation branch only runs when
-/// `create_file` is set -- so `create_new` WITHOUT `.create(true)` falls
-/// through every basis and the open errors ("unable to find key ..."). See
-/// PFC-10.
+/// `create_new` implies creation, like O_CREAT|O_EXCL), without `.create(true)`.
 pub fn create_new_creates_missing() {
     let tmp = TmpDict::new("create_new_missing");
     let path = tmp.path("f");
@@ -360,4 +354,4 @@ pub const TESTS: &[(&str, fn())] = &[
     ("openflags::double_create_truncates_each_time", double_create_truncates_each_time as fn()),
 ];
 
-pub const XFAILS: &[(&str, &str)] = &[("openflags::create_new_creates_missing", "PFC-10")];
+pub const XFAILS: &[(&str, &str)] = &[];

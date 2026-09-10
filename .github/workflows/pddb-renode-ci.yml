@@ -14,7 +14,7 @@
 # fail=.. xfail=.. xpass=.. total=..`, `CI done`). Known product bugs are
 # pinned as XFAIL so the suite is green while still detecting regressions AND
 # accidental fixes (XPASS fails the run: update the registry).
-# Expected steady-state totals: pass=101 fail=0 xfail=11 xpass=0 total=112.
+# Expected steady-state totals: pass=112 fail=0 xfail=0 xpass=0 total=112.
 #
 # The robot suite (emulation/tests/pddb-fs.robot) drives the first-boot UX
 # (format prompt, boot PIN x2, unattended 4 MiB smalldb format) through
@@ -92,10 +92,10 @@ jobs:
       # rust release tag (xtask/src/utils.rs), so resolve that repo's newest
       # release (tag `<rustc>.<n>`, e.g. 1.97.0.1) and install the matching
       # rustc; install-toolkit then downloads the matching toolkit. The
-      # pddb-fs-tests XFAIL registry pins CLIENT-side bugs (PFC-6/7/10, rust
-      # fork library/std/src/sys/fs/xous.rs); if a new toolkit fixes one, its
-      # test flips XFAIL -> XPASS and the run goes red until the registry is
-      # updated -- the signal that the toolchain moved. (jq is preinstalled on
+      # pddb-fs-tests XFAIL registry is where CLIENT-side bugs (rust fork
+      # library/std/src/sys/fs/xous.rs) get pinned; if a new toolkit fixes
+      # one, its test flips XFAIL -> XPASS and the run goes red until the
+      # registry is updated -- the signal that the toolchain moved. (jq is preinstalled on
       # ubuntu-latest; the releases API is public, no token needed.)
       - name: Resolve and install the latest betrusted-io/rust toolchain
         run: |

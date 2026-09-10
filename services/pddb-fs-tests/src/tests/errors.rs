@@ -151,11 +151,6 @@ pub fn dict_name_length_boundary() {
     check!(fs::remove_dir(&ok_name));
 
     // One byte over: must error cleanly (POSIX ENAMETOOLONG territory).
-    // XFAIL PFC-6: the client's `DirBuilder::mkdir` (rust fork
-    // sys/fs/xous.rs) never reads the server's reply retcode at all, so the
-    // server-side InternalError from `DictName::try_from_str` is swallowed
-    // and create_dir returns Ok. Same client bug as the already-exists case
-    // pinned by dirs::mkdir_path_already_exists_error.
     let over_res = fs::create_dir(&over_name);
     // Cleanup BEFORE the assert (a failing assert must not strand state).
     // Historically this also cleared server-side damage: `dict_add` used to
@@ -230,13 +225,7 @@ pub fn key_name_length_boundary() {
     check!(fs::remove_file(&alive_path));
 }
 
-/// `fs::metadata(path).len()` characterization. POSIX-correct behavior is
-/// that the returned length matches the actual content length; xous instead
-/// always reports 0 (PFC-5: the server half is fixed -- `stat_path` now
-/// sends the key's real length -- but the client libstd `stat()` never
-/// reads the length word and hardcodes `len: 0`, so metadata stays 0 until
-/// a rebuilt client ships). Assert the CORRECT length and register the
-/// XFAIL -- never assert the buggy `0`.
+/// `fs::metadata(path).len()` must report the actual content length.
 pub fn metadata_len_characterization() {
     let tmp = TmpDict::new("metadata_len_characterization");
     let path = tmp.path("sized");
@@ -250,7 +239,7 @@ pub fn metadata_len_characterization() {
     assert_eq!(
         md.len(),
         content.len() as u64,
-        "PFC-5: fs::metadata(..).len() should report the actual content length"
+        "fs::metadata(..).len() should report the actual content length"
     );
     check!(fs::remove_file(&path));
 }
@@ -367,9 +356,4 @@ pub const TESTS: &[(&str, fn())] = &[
     ("errors::churn_create_delete", churn_create_delete as fn()),
 ];
 
-pub const XFAILS: &[(&str, &str)] = &[
-    // create_dir swallows ALL server retcodes (fork mkdir never reads the
-    // reply), so the over-length name "succeeds" -- see the test's comment.
-    ("errors::dict_name_length_boundary", "PFC-6"),
-    ("errors::metadata_len_characterization", "PFC-5"),
-];
+pub const XFAILS: &[(&str, &str)] = &[];
